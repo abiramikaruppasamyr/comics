@@ -1,8 +1,14 @@
 import type { FormEvent, ReactNode } from "react";
 import { useEffect, useState } from "react";
 
-import { generateImage, getSystemMetrics } from "./services/api";
-import type { GenerateImageResponse, SystemMetrics } from "./types/api";
+import { generateControlNetImage, generateImage, getSystemMetrics } from "./services/api";
+import type {
+  ControlNetGenerateResponse,
+  GenerateImageResponse,
+  SystemMetrics,
+} from "./types/api";
+
+type GenerationMode = "normal" | "controlnet";
 
 type FormState = {
   positivePrompt: string;
@@ -12,6 +18,7 @@ type FormState = {
   steps: number;
   cfgScale: number;
   seed: string;
+  controlnetConditioningScale: number;
 };
 
 const initialState: FormState = {
@@ -22,11 +29,15 @@ const initialState: FormState = {
   steps: 20,
   cfgScale: 7.5,
   seed: "",
+  controlnetConditioningScale: 1.0,
 };
 
 export default function App() {
+  const [mode, setMode] = useState<GenerationMode>("normal");
   const [form, setForm] = useState<FormState>(initialState);
-  const [result, setResult] = useState<GenerateImageResponse | null>(null);
+  const [normalResult, setNormalResult] = useState<GenerateImageResponse | null>(null);
+  const [controlNetResult, setControlNetResult] = useState<ControlNetGenerateResponse | null>(null);
+  const [uploadedImage, setUploadedImage] = useState<File | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,18 +65,50 @@ export default function App() {
     setError(null);
 
     try {
-      const payload = {
-        positive_prompt: form.positivePrompt.trim(),
-        negative_prompt: form.negativePrompt.trim(),
-        width: Number(form.width),
-        height: Number(form.height),
-        steps: Number(form.steps),
-        cfg_scale: Number(form.cfgScale),
-        seed: form.seed.trim() === "" ? null : Number(form.seed),
-      };
-      const response = await generateImage(payload);
-      setResult(response);
-      setMetrics(response.system);
+      if (mode === "controlnet") {
+        if (!uploadedImage) {
+          throw new Error("Upload a sketch or reference image for ControlNet Lineart mode.");
+        }
+
+        const payload = new FormData();
+        payload.append("image", uploadedImage);
+        payload.append("positive_prompt", form.positivePrompt.trim());
+        payload.append("negative_prompt", form.negativePrompt.trim());
+        payload.append("width", String(Number(form.width)));
+        payload.append("height", String(Number(form.height)));
+        payload.append("steps", String(Number(form.steps)));
+        payload.append("cfg_scale", String(Number(form.cfgScale)));
+        payload.append(
+          "seed",
+          form.seed.trim() === "" ? "-1" : String(Number(form.seed)),
+        );
+        payload.append(
+          "controlnet_conditioning_scale",
+          String(Number(form.controlnetConditioningScale)),
+        );
+
+        const response = await generateControlNetImage(payload);
+        setControlNetResult(response);
+        setMetrics({
+          cpu_percent: response.cpu_usage,
+          memory_percent: Number(((response.ram_used / response.ram_total) * 100).toFixed(1)),
+          memory_used_mb: response.ram_used,
+          memory_available_mb: Number((response.ram_total - response.ram_used).toFixed(1)),
+        });
+      } else {
+        const payload = {
+          positive_prompt: form.positivePrompt.trim(),
+          negative_prompt: form.negativePrompt.trim(),
+          width: Number(form.width),
+          height: Number(form.height),
+          steps: Number(form.steps),
+          cfg_scale: Number(form.cfgScale),
+          seed: form.seed.trim() === "" ? null : Number(form.seed),
+        };
+        const response = await generateImage(payload);
+        setNormalResult(response);
+        setMetrics(response.system);
+      }
     } catch (submitError) {
       const message =
         submitError instanceof Error ? submitError.message : "Unable to generate image.";
@@ -125,12 +168,15 @@ export default function App() {
               <div>
                 <h2 className="font-display text-2xl font-semibold text-white">Prompt Controls</h2>
                 <p className="mt-1 text-sm text-slate-400">
-                  Tune generation parameters before each local inference run.
+                  Switch between standard generation and lineart-guided ControlNet generation.
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => setForm(initialState)}
+                onClick={() => {
+                  setForm(initialState);
+                  setUploadedImage(null);
+                }}
                 className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
               >
                 Reset
@@ -138,6 +184,21 @@ export default function App() {
             </div>
 
             <div className="space-y-5">
+              <div className="rounded-[24px] border border-white/10 bg-white/5 p-2">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <ModeButton
+                    active={mode === "normal"}
+                    label="Normal"
+                    onClick={() => setMode("normal")}
+                  />
+                  <ModeButton
+                    active={mode === "controlnet"}
+                    label="ControlNet Lineart"
+                    onClick={() => setMode("controlnet")}
+                  />
+                </div>
+              </div>
+
               <FieldShell
                 label="Positive Prompt"
                 helper="Describe the subject, style, composition, lighting, and desired details."
@@ -164,6 +225,47 @@ export default function App() {
                   className="w-full resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-orange-400/50 focus:bg-white/[0.07]"
                 />
               </FieldShell>
+
+              {mode === "controlnet" ? (
+                <>
+                  <FieldShell
+                    label="Sketch / Reference Upload"
+                    helper="Upload the source image that will be converted to lineart."
+                  >
+                    <label className="flex cursor-pointer flex-col items-center justify-center rounded-[24px] border border-dashed border-white/15 bg-white/[0.04] px-5 py-8 text-center transition hover:border-orange-400/35 hover:bg-white/[0.06]">
+                      <span className="font-display text-lg font-semibold text-white">
+                        {uploadedImage ? uploadedImage.name : "Choose an image"}
+                      </span>
+                      <span className="mt-2 text-sm text-slate-400">
+                        PNG, JPG, or WEBP. This file is sent as multipart form data.
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => setUploadedImage(event.target.files?.[0] ?? null)}
+                      />
+                    </label>
+                  </FieldShell>
+
+                  <FieldShell
+                    label="ControlNet Strength"
+                    helper={`${form.controlnetConditioningScale.toFixed(1)} between 0.1 and 2.0`}
+                  >
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={2.0}
+                      step={0.1}
+                      value={form.controlnetConditioningScale}
+                      onChange={(event) =>
+                        updateField("controlnetConditioningScale", Number(event.target.value))
+                      }
+                      className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
+                    />
+                  </FieldShell>
+                </>
+              ) : null}
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <NumberField
@@ -226,14 +328,14 @@ export default function App() {
 
             <div className="mt-6 flex flex-col gap-3 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-slate-400">
-                CPU-only generation. The model is loaded, used, and unloaded after each request.
+                CPU-only generation. Models are loaded from local files, used, then unloaded after each request.
               </p>
               <button
                 type="submit"
                 disabled={loading}
                 className="inline-flex items-center justify-center rounded-full bg-orange-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-orange-400 disabled:cursor-not-allowed disabled:bg-orange-700"
               >
-                {loading ? "Generating..." : "Generate Image"}
+                {loading ? "Generating..." : mode === "controlnet" ? "Generate with ControlNet" : "Generate Image"}
               </button>
             </div>
           </form>
@@ -244,7 +346,9 @@ export default function App() {
                 <div>
                   <h2 className="font-display text-2xl font-semibold text-white">Current Preview</h2>
                   <p className="mt-1 text-sm text-slate-400">
-                    The latest image saved in the root output folder.
+                    {mode === "controlnet"
+                      ? "Lineart preview and generated output for the latest ControlNet request."
+                      : "The latest image saved in the root output folder."}
                   </p>
                 </div>
                 <button
@@ -256,26 +360,62 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[rgba(255,255,255,0.03)]">
-                {result ? (
+              {mode === "controlnet" ? (
+                controlNetResult ? (
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <PreviewPanel
+                      title="Lineart Preview"
+                      src={controlNetResult.lineart_preview_url}
+                      alt="Preprocessed lineart preview"
+                    />
+                    <PreviewPanel
+                      title="Generated Output"
+                      src={controlNetResult.image_url}
+                      alt="ControlNet generated output"
+                    />
+                  </div>
+                ) : (
+                  <EmptyPreview message="Upload a sketch and generate to see the lineart preview and final output here." />
+                )
+              ) : normalResult ? (
+                <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[rgba(255,255,255,0.03)]">
                   <img
-                    src={result.image.image_url}
-                    alt={result.image.positive_prompt}
+                    src={normalResult.image.image_url}
+                    alt={normalResult.image.positive_prompt}
                     className="aspect-square w-full object-cover"
                   />
-                ) : (
-                  <div className="flex aspect-square items-center justify-center bg-[radial-gradient(circle_at_center,rgba(249,115,22,0.12),transparent_50%)] p-8 text-center text-sm text-slate-400">
-                    Generate an image to preview the latest output here.
-                  </div>
-                )}
-              </div>
+                </div>
+              ) : (
+                <EmptyPreview message="Generate an image to preview the latest output here." />
+              )}
 
-              {result ? (
+              {mode === "controlnet" && controlNetResult ? (
                 <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <InfoChip label="Filename" value={result.image.filename} />
-                  <InfoChip label="Seed" value={String(result.image.seed)} />
-                  <InfoChip label="Size" value={`${result.image.width} x ${result.image.height}`} />
-                  <InfoChip label="Steps / CFG" value={`${result.image.steps} / ${result.image.cfg_scale}`} />
+                  <InfoChip label="Output File" value={controlNetResult.image_filename} />
+                  <InfoChip
+                    label="Lineart File"
+                    value={controlNetResult.preprocessed_lineart_filename}
+                  />
+                  <InfoChip label="Seed" value={String(controlNetResult.seed_used)} />
+                  <InfoChip
+                    label="Generation Time"
+                    value={`${controlNetResult.generation_time_seconds}s`}
+                  />
+                </div>
+              ) : null}
+
+              {mode === "normal" && normalResult ? (
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  <InfoChip label="Filename" value={normalResult.image.filename} />
+                  <InfoChip label="Seed" value={String(normalResult.image.seed)} />
+                  <InfoChip
+                    label="Size"
+                    value={`${normalResult.image.width} x ${normalResult.image.height}`}
+                  />
+                  <InfoChip
+                    label="Steps / CFG"
+                    value={`${normalResult.image.steps} / ${normalResult.image.cfg_scale}`}
+                  />
                 </div>
               ) : null}
             </section>
@@ -317,6 +457,30 @@ export default function App() {
         </section>
       </div>
     </main>
+  );
+}
+
+function ModeButton({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-2xl px-4 py-3 text-sm font-semibold transition ${
+        active
+          ? "bg-orange-500 text-slate-950"
+          : "border border-white/10 bg-transparent text-slate-300 hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -431,6 +595,35 @@ function InfoChip({ label, value }: { label: string; value: string }) {
     <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
       <p className="text-xs uppercase tracking-[0.2em] text-slate-500">{label}</p>
       <p className="mt-2 text-sm font-medium text-slate-100">{value}</p>
+    </div>
+  );
+}
+
+function EmptyPreview({ message }: { message: string }) {
+  return (
+    <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[rgba(255,255,255,0.03)]">
+      <div className="flex aspect-square items-center justify-center bg-[radial-gradient(circle_at_center,rgba(249,115,22,0.12),transparent_50%)] p-8 text-center text-sm text-slate-400">
+        {message}
+      </div>
+    </div>
+  );
+}
+
+function PreviewPanel({
+  title,
+  src,
+  alt,
+}: {
+  title: string;
+  src: string;
+  alt: string;
+}) {
+  return (
+    <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[rgba(255,255,255,0.03)]">
+      <div className="border-b border-white/10 px-4 py-3 text-sm font-semibold text-slate-200">
+        {title}
+      </div>
+      <img src={src} alt={alt} className="aspect-square w-full object-cover" />
     </div>
   );
 }
