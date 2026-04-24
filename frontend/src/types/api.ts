@@ -31,3 +31,15 @@ export type GenerateImageResponse = {
   system: SystemMetrics;
   message: string;
 };
+
+export type ControlNetGenerateResponse = {
+  image_url: string;
+  lineart_preview_url: string;
+  cpu_usage: number;
+  ram_used: number;
+  ram_total: number;
+  seed_used: number;
+  generation_time_seconds: number;
+  image_filename: string;
+  preprocessed_lineart_filename: string;
+};

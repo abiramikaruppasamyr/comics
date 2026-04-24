@@ -38,3 +38,42 @@ Run scripts required:
 Constraints:
 - Do not auto-run the app from the scaffold.
 - User will install packages manually.
+
+Phase 2 progress:
+- Step 1 complete: read existing context and inspected the current Phase 1 scaffold.
+- Step 1 complete: created git branch `ControllNET`.
+- Step 1 complete: located local ControlNet assets:
+  - ControlNet model: `/home/seechan1/Desktop/comics/models/controlnet/control_v11p_sd15_lineart.safetensors`
+  - ControlNet YAML: `/home/seechan1/Desktop/comics/models/config_files/control_v11p_sd15_lineart.yaml`
+- Step 2 complete: added backend ControlNet files:
+  - `backend/app/services/controlnet_pipeline.py`
+  - `backend/app/api/routes/controlnet.py`
+- Step 2 complete: registered `/api/controlnet/generate` directly on the FastAPI app so the existing Phase 1 `/api/v1/generation` route remains unchanged.
+- Step 2 complete: added backend config entries and dependency pins for:
+  - `controlnet-aux==0.0.10`
+  - `opencv-python==4.10.0.84`
+- Step 3 complete: updated the frontend to support `Normal` and `ControlNet Lineart` modes.
+- Step 3 complete: ControlNet mode now includes:
+  - image upload
+  - `ControlNet Strength` slider (`0.1` to `2.0`, default `1.0`)
+  - multipart submission to `/api/controlnet/generate`
+  - side-by-side lineart preview and generated image preview
+- Step 3 complete: Normal mode behavior remains on the existing Phase 1 JSON endpoint.
+- Step 4 complete: installed the requested backend dependencies into `backend/.venv`:
+  - `controlnet-aux==0.0.10`
+  - `opencv-python==4.10.0.84`
+- Step 4 complete: constrained the install to avoid pip upgrading the existing `torch 2.4.1` environment to a different major stack.
+- Step 5 complete: fixed the ControlNet lineart annotator loader to use the direct local annotator directory instead of relying on `hf_hub_download(..., cache_dir=...)`.
+- Step 5 complete: added explicit checks for:
+  - `/home/seechan1/Desktop/comics/models/controlnet/annotators/lllyasviel/Annotators/sk_model.pth`
+  - `/home/seechan1/Desktop/comics/models/controlnet/annotators/lllyasviel/Annotators/sk_model2.pth`
+- Step 6 complete: downloaded the official Diffusers `config.json` for `lllyasviel/control_v11p_sd15_lineart` into:
+  - `/home/seechan1/Desktop/comics/models/controlnet/control_v11p_sd15_lineart_diffusers/config.json`
+- Step 6 complete: updated the backend to load the local ControlNet checkpoint with `config=<local diffusers config dir>` so `diffusers` does not try to infer or fetch a Hub config.
+- Pending:
+  - None for the requested Phase 2 scaffold
+- Issues found:
+  - The existing Phase 1 API uses `/api/v1/generation`, while the Phase 2 request specifies `/api/controlnet/generate`. The new ControlNet route will be added separately so the existing endpoint remains untouched.
+  - The original annotator loading path was incorrect for offline local files because `LineartDetector.from_pretrained()` only loads direct local files when given a directory path, not a repo id plus cache dir.
+  - `ControlNetModel.from_single_file()` also needs a local Diffusers config directory for the lineart checkpoint; otherwise it tries to infer a repo config and may fall back to the wrong ControlNet variant.
+  - `controlnet-aux` normally wants additional transitive packages and may try to resolve a newer PyTorch stack if installed unconstrained. The requested packages were installed without dependency upgrades to avoid breaking the existing backend environment.

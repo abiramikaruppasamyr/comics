@@ -16,6 +16,18 @@ class Settings(BaseSettings):
     model_config_path: Path = Field(
         default=Path("/home/seechan1/Desktop/comics/models/config_files/v1-inference.yaml")
     )
+    controlnet_model_path: Path = Field(
+        default=Path("/home/seechan1/Desktop/comics/models/controlnet/control_v11p_sd15_lineart.safetensors")
+    )
+    controlnet_config_path: Path = Field(
+        default=Path("/home/seechan1/Desktop/comics/models/config_files/control_v11p_sd15_lineart.yaml")
+    )
+    controlnet_diffusers_config_dir: Path = Field(
+        default=Path("/home/seechan1/Desktop/comics/models/controlnet/control_v11p_sd15_lineart_diffusers")
+    )
+    controlnet_annotator_cache_dir: Path = Field(
+        default=Path("/home/seechan1/Desktop/comics/models/controlnet/annotators")
+    )
     output_dir: Path = Field(default=Path("/home/seechan1/Desktop/comics/output"))
     default_width: int = 512
     default_height: int = 512
