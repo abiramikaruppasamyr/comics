@@ -1,5 +1,5 @@
-import type { FormEvent, ReactNode } from "react";
-import { useEffect, useState } from "react";
+import type { ChangeEvent, FormEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { generateControlNetImage, generateImage, getSystemMetrics } from "./services/api";
 import type {
@@ -8,7 +8,7 @@ import type {
   SystemMetrics,
 } from "./types/api";
 
-type GenerationMode = "normal" | "controlnet";
+type GenerationMode = "normal" | "controlnet" | "canvas";
 
 type FormState = {
   positivePrompt: string;
@@ -21,6 +21,38 @@ type FormState = {
   controlnetConditioningScale: number;
 };
 
+type CanvasComponent = {
+  id: string;
+  name: string;
+  src: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  naturalWidth: number;
+  naturalHeight: number;
+  zIndex: number;
+};
+
+type DragState =
+  | {
+      type: "move";
+      id: string;
+      pointerId: number;
+      offsetX: number;
+      offsetY: number;
+    }
+  | {
+      type: "resize";
+      id: string;
+      pointerId: number;
+      startX: number;
+      startY: number;
+      startWidth: number;
+      startHeight: number;
+      aspectRatio: number;
+    };
+
 const initialState: FormState = {
   positivePrompt: "",
   negativePrompt: "",
@@ -32,19 +64,42 @@ const initialState: FormState = {
   controlnetConditioningScale: 1.0,
 };
 
+const MIN_COMPONENT_SIZE = 32;
+
 export default function App() {
   const [mode, setMode] = useState<GenerationMode>("normal");
   const [form, setForm] = useState<FormState>(initialState);
   const [normalResult, setNormalResult] = useState<GenerateImageResponse | null>(null);
   const [controlNetResult, setControlNetResult] = useState<ControlNetGenerateResponse | null>(null);
   const [uploadedImage, setUploadedImage] = useState<File | null>(null);
+  const [canvasComponents, setCanvasComponents] = useState<CanvasComponent[]>([]);
+  const [activeComponentId, setActiveComponentId] = useState<string | null>(null);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragState, setDragState] = useState<DragState | null>(null);
+
+  const canvasStageRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     void refreshMetrics();
   }, []);
+
+  useEffect(() => {
+    setCanvasComponents((current) =>
+      current.map((component) => {
+        const clampedWidth = Math.min(component.width, Number(form.width));
+        const clampedHeight = Math.min(component.height, Number(form.height));
+        return {
+          ...component,
+          width: clampedWidth,
+          height: clampedHeight,
+          x: clamp(component.x, 0, Math.max(0, Number(form.width) - clampedWidth)),
+          y: clamp(component.y, 0, Math.max(0, Number(form.height) - clampedHeight)),
+        };
+      }),
+    );
+  }, [form.width, form.height]);
 
   async function refreshMetrics() {
     try {
@@ -65,37 +120,7 @@ export default function App() {
     setError(null);
 
     try {
-      if (mode === "controlnet") {
-        if (!uploadedImage) {
-          throw new Error("Upload a sketch or reference image for ControlNet Lineart mode.");
-        }
-
-        const payload = new FormData();
-        payload.append("image", uploadedImage);
-        payload.append("positive_prompt", form.positivePrompt.trim());
-        payload.append("negative_prompt", form.negativePrompt.trim());
-        payload.append("width", String(Number(form.width)));
-        payload.append("height", String(Number(form.height)));
-        payload.append("steps", String(Number(form.steps)));
-        payload.append("cfg_scale", String(Number(form.cfgScale)));
-        payload.append(
-          "seed",
-          form.seed.trim() === "" ? "-1" : String(Number(form.seed)),
-        );
-        payload.append(
-          "controlnet_conditioning_scale",
-          String(Number(form.controlnetConditioningScale)),
-        );
-
-        const response = await generateControlNetImage(payload);
-        setControlNetResult(response);
-        setMetrics({
-          cpu_percent: response.cpu_usage,
-          memory_percent: Number(((response.ram_used / response.ram_total) * 100).toFixed(1)),
-          memory_used_mb: response.ram_used,
-          memory_available_mb: Number((response.ram_total - response.ram_used).toFixed(1)),
-        });
-      } else {
+      if (mode === "normal") {
         const payload = {
           positive_prompt: form.positivePrompt.trim(),
           negative_prompt: form.negativePrompt.trim(),
@@ -108,6 +133,14 @@ export default function App() {
         const response = await generateImage(payload);
         setNormalResult(response);
         setMetrics(response.system);
+      } else if (mode === "controlnet") {
+        if (!uploadedImage) {
+          throw new Error("Upload a sketch or reference image for ControlNet Lineart mode.");
+        }
+        await submitControlNetSource(uploadedImage);
+      } else {
+        const canvasFile = await exportCanvasAsFile();
+        await submitControlNetSource(canvasFile);
       }
     } catch (submitError) {
       const message =
@@ -117,6 +150,261 @@ export default function App() {
       setLoading(false);
     }
   }
+
+  async function submitControlNetSource(sourceFile: File) {
+    const payload = new FormData();
+    payload.append("image", sourceFile);
+    payload.append("positive_prompt", form.positivePrompt.trim());
+    payload.append("negative_prompt", form.negativePrompt.trim());
+    payload.append("width", String(Number(form.width)));
+    payload.append("height", String(Number(form.height)));
+    payload.append("steps", String(Number(form.steps)));
+    payload.append("cfg_scale", String(Number(form.cfgScale)));
+    payload.append("seed", form.seed.trim() === "" ? "-1" : String(Number(form.seed)));
+    payload.append("controlnet_conditioning_scale", String(Number(form.controlnetConditioningScale)));
+
+    const response = await generateControlNetImage(payload);
+    setControlNetResult(response);
+    setMetrics({
+      cpu_percent: response.cpu_usage,
+      memory_percent: Number(((response.ram_used / response.ram_total) * 100).toFixed(1)),
+      memory_used_mb: response.ram_used,
+      memory_available_mb: Number((response.ram_total - response.ram_used).toFixed(1)),
+    });
+  }
+
+  async function exportCanvasAsFile(): Promise<File> {
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = Number(form.width);
+    exportCanvas.height = Number(form.height);
+    const context = exportCanvas.getContext("2d");
+
+    if (!context) {
+      throw new Error("Failed to prepare canvas export.");
+    }
+
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+    const orderedComponents = [...canvasComponents].sort((left, right) => left.zIndex - right.zIndex);
+    await Promise.all(
+      orderedComponents.map(
+        (component) =>
+          new Promise<void>((resolve, reject) => {
+            const image = new Image();
+            image.onload = () => {
+              context.drawImage(image, component.x, component.y, component.width, component.height);
+              resolve();
+            };
+            image.onerror = () => reject(new Error(`Failed to render canvas component: ${component.name}`));
+            image.src = component.src;
+          }),
+      ),
+    );
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      exportCanvas.toBlob(resolve, "image/png");
+    });
+
+    if (!blob) {
+      throw new Error("Canvas export failed.");
+    }
+
+    return new File([blob], "canvas-compose.png", { type: "image/png" });
+  }
+
+  function handleControlNetUpload(event: ChangeEvent<HTMLInputElement>) {
+    setUploadedImage(event.target.files?.[0] ?? null);
+  }
+
+  function handleCanvasComponentUpload(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) {
+      return;
+    }
+
+    void Promise.all(files.map((file) => loadCanvasComponent(file))).then((components) => {
+      setCanvasComponents((current) => {
+        const highestZIndex = current.reduce((maxValue, item) => Math.max(maxValue, item.zIndex), 0);
+        return [
+          ...current,
+          ...components.map((component, index) => ({
+            ...component,
+            zIndex: highestZIndex + index + 1,
+          })),
+        ];
+      });
+      const lastComponent = components.length > 0 ? components[components.length - 1] : null;
+      setActiveComponentId(lastComponent?.id ?? null);
+    });
+
+    event.target.value = "";
+  }
+
+  function loadCanvasComponent(file: File): Promise<CanvasComponent> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const src = reader.result;
+        if (typeof src !== "string") {
+          reject(new Error(`Failed to read ${file.name}.`));
+          return;
+        }
+
+        const image = new Image();
+        image.onload = () => {
+          const stageWidth = Number(form.width);
+          const stageHeight = Number(form.height);
+          const defaultWidth = Math.min(stageWidth * 0.45, image.width);
+          const aspectRatio = image.height / image.width;
+          const defaultHeight = Math.max(MIN_COMPONENT_SIZE, Math.round(defaultWidth * aspectRatio));
+          const componentWidth = Math.max(MIN_COMPONENT_SIZE, Math.round(defaultWidth));
+          const componentHeight = Math.max(MIN_COMPONENT_SIZE, Math.round(defaultHeight));
+
+          resolve({
+            id: `${file.name}-${crypto.randomUUID()}`,
+            name: file.name,
+            src,
+            x: Math.max(0, Math.round((stageWidth - componentWidth) / 2)),
+            y: Math.max(0, Math.round((stageHeight - componentHeight) / 2)),
+            width: componentWidth,
+            height: componentHeight,
+            naturalWidth: image.width,
+            naturalHeight: image.height,
+            zIndex: 1,
+          });
+        };
+        image.onerror = () => reject(new Error(`Failed to load ${file.name}.`));
+        image.src = src;
+      };
+      reader.onerror = () => reject(new Error(`Failed to read ${file.name}.`));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function resetFormState() {
+    setForm(initialState);
+    setUploadedImage(null);
+    setCanvasComponents([]);
+    setActiveComponentId(null);
+  }
+
+  function bringComponentToFront(id: string) {
+    setCanvasComponents((current) => {
+      const highestZIndex = current.reduce((maxValue, item) => Math.max(maxValue, item.zIndex), 0);
+      return current.map((component) =>
+        component.id === id ? { ...component, zIndex: highestZIndex + 1 } : component,
+      );
+    });
+    setActiveComponentId(id);
+  }
+
+  function removeCanvasComponent(id: string) {
+    setCanvasComponents((current) => current.filter((component) => component.id !== id));
+    setActiveComponentId((current) => (current === id ? null : current));
+  }
+
+  function clearCanvas() {
+    setCanvasComponents([]);
+    setActiveComponentId(null);
+  }
+
+  function handleStagePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!dragState || !canvasStageRef.current) {
+      return;
+    }
+
+    const rect = canvasStageRef.current.getBoundingClientRect();
+    const pointerX = ((event.clientX - rect.left) / rect.width) * Number(form.width);
+    const pointerY = ((event.clientY - rect.top) / rect.height) * Number(form.height);
+
+    if (dragState.type === "move") {
+      setCanvasComponents((current) =>
+        current.map((component) => {
+          if (component.id !== dragState.id) {
+            return component;
+          }
+
+          const nextX = clamp(pointerX - dragState.offsetX, 0, Number(form.width) - component.width);
+          const nextY = clamp(pointerY - dragState.offsetY, 0, Number(form.height) - component.height);
+          return { ...component, x: nextX, y: nextY };
+        }),
+      );
+      return;
+    }
+
+    setCanvasComponents((current) =>
+      current.map((component) => {
+        if (component.id !== dragState.id) {
+          return component;
+        }
+
+        const deltaX = pointerX - dragState.startX;
+        const nextWidth = clamp(
+          dragState.startWidth + deltaX,
+          MIN_COMPONENT_SIZE,
+          Number(form.width) - component.x,
+        );
+        const nextHeight = clamp(
+          Math.round(nextWidth * dragState.aspectRatio),
+          MIN_COMPONENT_SIZE,
+          Number(form.height) - component.y,
+        );
+
+        return {
+          ...component,
+          width: nextWidth,
+          height: nextHeight,
+        };
+      }),
+    );
+  }
+
+  function handleStagePointerUp() {
+    setDragState(null);
+  }
+
+  function startMove(
+    event: ReactPointerEvent<HTMLDivElement>,
+    component: CanvasComponent,
+  ) {
+    if (!canvasStageRef.current) {
+      return;
+    }
+
+    const rect = canvasStageRef.current.getBoundingClientRect();
+    const pointerX = ((event.clientX - rect.left) / rect.width) * Number(form.width);
+    const pointerY = ((event.clientY - rect.top) / rect.height) * Number(form.height);
+
+    bringComponentToFront(component.id);
+    setDragState({
+      type: "move",
+      id: component.id,
+      pointerId: event.pointerId,
+      offsetX: pointerX - component.x,
+      offsetY: pointerY - component.y,
+    });
+  }
+
+  function startResize(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    component: CanvasComponent,
+  ) {
+    event.stopPropagation();
+    bringComponentToFront(component.id);
+    setDragState({
+      type: "resize",
+      id: component.id,
+      pointerId: event.pointerId,
+      startX: component.x + component.width,
+      startY: component.y + component.height,
+      startWidth: component.width,
+      startHeight: component.height,
+      aspectRatio: component.naturalHeight / component.naturalWidth,
+    });
+  }
+
+  const isControlGuidedMode = mode === "controlnet" || mode === "canvas";
 
   return (
     <main className="min-h-screen px-4 py-8 text-slate-100 sm:px-6 lg:px-10">
@@ -132,7 +420,7 @@ export default function App() {
               </h1>
               <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base">
                 Stable Diffusion v1.5 scaffolded for local, offline-first image generation with
-                prompt controls, preview output, and live system metrics after each run.
+                prompt controls, ControlNet guidance, and freeform canvas composition.
               </p>
             </div>
 
@@ -150,9 +438,9 @@ export default function App() {
                 accent="green"
               />
               <MetricCard
-                label="Output"
-                value="PNG"
-                detail="Saved to /output"
+                label="Modes"
+                value="3"
+                detail="Normal, Lineart, Canvas"
                 accent="slate"
               />
             </div>
@@ -168,15 +456,12 @@ export default function App() {
               <div>
                 <h2 className="font-display text-2xl font-semibold text-white">Prompt Controls</h2>
                 <p className="mt-1 text-sm text-slate-400">
-                  Switch between standard generation and lineart-guided ControlNet generation.
+                  Switch between standard generation, direct lineart upload, and canvas-driven composition.
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setForm(initialState);
-                  setUploadedImage(null);
-                }}
+                onClick={resetFormState}
                 className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
               >
                 Reset
@@ -185,16 +470,17 @@ export default function App() {
 
             <div className="space-y-5">
               <div className="rounded-[24px] border border-white/10 bg-white/5 p-2">
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <ModeButton
-                    active={mode === "normal"}
-                    label="Normal"
-                    onClick={() => setMode("normal")}
-                  />
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <ModeButton active={mode === "normal"} label="Normal" onClick={() => setMode("normal")} />
                   <ModeButton
                     active={mode === "controlnet"}
                     label="ControlNet Lineart"
                     onClick={() => setMode("controlnet")}
+                  />
+                  <ModeButton
+                    active={mode === "canvas"}
+                    label="Canvas Compose"
+                    onClick={() => setMode("canvas")}
                   />
                 </div>
               </div>
@@ -227,44 +513,72 @@ export default function App() {
               </FieldShell>
 
               {mode === "controlnet" ? (
-                <>
-                  <FieldShell
-                    label="Sketch / Reference Upload"
-                    helper="Upload the source image that will be converted to lineart."
-                  >
-                    <label className="flex cursor-pointer flex-col items-center justify-center rounded-[24px] border border-dashed border-white/15 bg-white/[0.04] px-5 py-8 text-center transition hover:border-orange-400/35 hover:bg-white/[0.06]">
-                      <span className="font-display text-lg font-semibold text-white">
-                        {uploadedImage ? uploadedImage.name : "Choose an image"}
-                      </span>
-                      <span className="mt-2 text-sm text-slate-400">
-                        PNG, JPG, or WEBP. This file is sent as multipart form data.
-                      </span>
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(event) => setUploadedImage(event.target.files?.[0] ?? null)}
-                      />
-                    </label>
-                  </FieldShell>
-
-                  <FieldShell
-                    label="ControlNet Strength"
-                    helper={`${form.controlnetConditioningScale.toFixed(1)} between 0.1 and 2.0`}
-                  >
+                <FieldShell
+                  label="Sketch / Reference Upload"
+                  helper="Upload the source image that will be converted to lineart."
+                >
+                  <label className="flex cursor-pointer flex-col items-center justify-center rounded-[24px] border border-dashed border-white/15 bg-white/[0.04] px-5 py-8 text-center transition hover:border-orange-400/35 hover:bg-white/[0.06]">
+                    <span className="font-display text-lg font-semibold text-white">
+                      {uploadedImage ? uploadedImage.name : "Choose an image"}
+                    </span>
+                    <span className="mt-2 text-sm text-slate-400">
+                      PNG, JPG, or WEBP. This file is sent as multipart form data.
+                    </span>
                     <input
-                      type="range"
-                      min={0.1}
-                      max={2.0}
-                      step={0.1}
-                      value={form.controlnetConditioningScale}
-                      onChange={(event) =>
-                        updateField("controlnetConditioningScale", Number(event.target.value))
-                      }
-                      className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleControlNetUpload}
                     />
-                  </FieldShell>
-                </>
+                  </label>
+                </FieldShell>
+              ) : null}
+
+              {mode === "canvas" ? (
+                <FieldShell
+                  label="Canvas Components"
+                  helper="Add multiple reference images and compose them directly on the canvas."
+                >
+                  <label className="flex cursor-pointer items-center justify-between rounded-[24px] border border-dashed border-white/15 bg-white/[0.04] px-5 py-4 transition hover:border-orange-400/35 hover:bg-white/[0.06]">
+                    <div>
+                      <div className="font-display text-lg font-semibold text-white">
+                        Add Component to Canvas
+                      </div>
+                      <div className="mt-1 text-sm text-slate-400">
+                        {canvasComponents.length} component{canvasComponents.length === 1 ? "" : "s"} on canvas
+                      </div>
+                    </div>
+                    <div className="rounded-full bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950">
+                      Add
+                    </div>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={handleCanvasComponentUpload}
+                    />
+                  </label>
+                </FieldShell>
+              ) : null}
+
+              {isControlGuidedMode ? (
+                <FieldShell
+                  label="ControlNet Strength"
+                  helper={`${form.controlnetConditioningScale.toFixed(1)} between 0.1 and 2.0`}
+                >
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={2.0}
+                    step={0.1}
+                    value={form.controlnetConditioningScale}
+                    onChange={(event) =>
+                      updateField("controlnetConditioningScale", Number(event.target.value))
+                    }
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
+                  />
+                </FieldShell>
               ) : null}
 
               <div className="grid gap-4 sm:grid-cols-2">
@@ -328,14 +642,20 @@ export default function App() {
 
             <div className="mt-6 flex flex-col gap-3 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-slate-400">
-                CPU-only generation. Models are loaded from local files, used, then unloaded after each request.
+                CPU-only generation. Control-guided modes reuse the existing ControlNet endpoint and export a flat input image when needed.
               </p>
               <button
                 type="submit"
                 disabled={loading}
                 className="inline-flex items-center justify-center rounded-full bg-orange-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-orange-400 disabled:cursor-not-allowed disabled:bg-orange-700"
               >
-                {loading ? "Generating..." : mode === "controlnet" ? "Generate with ControlNet" : "Generate Image"}
+                {loading
+                  ? "Generating..."
+                  : mode === "normal"
+                    ? "Generate Image"
+                    : mode === "canvas"
+                      ? "Generate from Canvas"
+                      : "Generate with ControlNet"}
               </button>
             </div>
           </form>
@@ -344,11 +664,15 @@ export default function App() {
             <section className="rounded-[28px] border border-white/10 bg-[rgba(7,14,22,0.8)] p-5 shadow-panel backdrop-blur sm:p-6">
               <div className="mb-5 flex items-center justify-between">
                 <div>
-                  <h2 className="font-display text-2xl font-semibold text-white">Current Preview</h2>
+                  <h2 className="font-display text-2xl font-semibold text-white">
+                    {mode === "canvas" ? "Canvas Compose" : "Current Preview"}
+                  </h2>
                   <p className="mt-1 text-sm text-slate-400">
-                    {mode === "controlnet"
-                      ? "Lineart preview and generated output for the latest ControlNet request."
-                      : "The latest image saved in the root output folder."}
+                    {mode === "normal"
+                      ? "The latest image saved in the root output folder."
+                      : mode === "controlnet"
+                        ? "Lineart preview and generated output for the latest ControlNet request."
+                        : "Arrange uploaded components, then export the canvas through the existing ControlNet pipeline."}
                   </p>
                 </div>
                 <button
@@ -360,7 +684,103 @@ export default function App() {
                 </button>
               </div>
 
-              {mode === "controlnet" ? (
+              {mode === "canvas" ? (
+                <div className="space-y-4">
+                  <div className="overflow-auto rounded-[24px] border border-white/10 bg-[linear-gradient(135deg,rgba(15,23,42,0.92),rgba(30,41,59,0.9))] p-3">
+                    <div
+                      ref={canvasStageRef}
+                      className="relative mx-auto touch-none overflow-hidden rounded-[20px] border border-white/10 bg-[linear-gradient(180deg,#1f2937,#0f172a)] shadow-inner"
+                      style={{
+                        width: `${form.width}px`,
+                        height: `${form.height}px`,
+                        backgroundImage:
+                          "linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)",
+                        backgroundSize: "24px 24px",
+                      }}
+                      onPointerMove={handleStagePointerMove}
+                      onPointerUp={handleStagePointerUp}
+                      onPointerLeave={handleStagePointerUp}
+                    >
+                      {canvasComponents.length === 0 ? (
+                        <div className="flex h-full items-center justify-center p-8 text-center text-sm text-slate-400">
+                          Add one or more components, drag them into place, resize from the bottom-right handle, and generate when ready.
+                        </div>
+                      ) : null}
+
+                      {[...canvasComponents]
+                        .sort((left, right) => left.zIndex - right.zIndex)
+                        .map((component) => (
+                          <div
+                            key={component.id}
+                            className={`absolute overflow-hidden rounded-xl border ${
+                              activeComponentId === component.id
+                                ? "border-orange-400/70 shadow-[0_0_0_1px_rgba(249,115,22,0.45)]"
+                                : "border-white/10"
+                            }`}
+                            style={{
+                              left: `${component.x}px`,
+                              top: `${component.y}px`,
+                              width: `${component.width}px`,
+                              height: `${component.height}px`,
+                              zIndex: component.zIndex,
+                            }}
+                            onPointerDown={(event) => startMove(event, component)}
+                          >
+                            <img
+                              src={component.src}
+                              alt={component.name}
+                              draggable={false}
+                              className="h-full w-full select-none object-cover"
+                            />
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                removeCanvasComponent(component.id);
+                              }}
+                              className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-950/85 text-xs font-semibold text-white shadow-lg"
+                            >
+                              X
+                            </button>
+                            <button
+                              type="button"
+                              onPointerDown={(event) => startResize(event, component)}
+                              className="absolute bottom-1 right-1 h-5 w-5 cursor-se-resize rounded-md border border-white/20 bg-orange-500/90"
+                            />
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-slate-400">
+                      Canvas matches the current width and height settings: {form.width} x {form.height}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={clearCanvas}
+                      className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-red-400/30 hover:bg-white/5 hover:text-white"
+                    >
+                      Clear Canvas
+                    </button>
+                  </div>
+
+                  {controlNetResult ? (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <PreviewPanel
+                        title="Lineart Preview"
+                        src={controlNetResult.lineart_preview_url}
+                        alt="Preprocessed lineart preview"
+                      />
+                      <PreviewPanel
+                        title="Generated Output"
+                        src={controlNetResult.image_url}
+                        alt="Canvas Compose generated output"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              ) : isControlGuidedMode ? (
                 controlNetResult ? (
                   <div className="grid gap-4 md:grid-cols-2">
                     <PreviewPanel
@@ -375,7 +795,7 @@ export default function App() {
                     />
                   </div>
                 ) : (
-                  <EmptyPreview message="Upload a sketch and generate to see the lineart preview and final output here." />
+                  <EmptyPreview message="Generate to see the lineart preview and final output here." />
                 )
               ) : normalResult ? (
                 <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[rgba(255,255,255,0.03)]">
@@ -389,7 +809,7 @@ export default function App() {
                 <EmptyPreview message="Generate an image to preview the latest output here." />
               )}
 
-              {mode === "controlnet" && controlNetResult ? (
+              {isControlGuidedMode && controlNetResult ? (
                 <div className="mt-5 grid gap-3 sm:grid-cols-2">
                   <InfoChip label="Output File" value={controlNetResult.image_filename} />
                   <InfoChip
@@ -448,7 +868,7 @@ export default function App() {
                 <UsageCard
                   label="Execution Mode"
                   value="CPU Only"
-                  detail="CUDA visibility disabled"
+                  detail="Canvas mode reuses ControlNet generation"
                   tone="slate"
                 />
               </div>
@@ -458,6 +878,10 @@ export default function App() {
       </div>
     </main>
   );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function ModeButton({
