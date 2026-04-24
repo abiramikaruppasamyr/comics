@@ -1,0 +1,40 @@
+Project: Offline-first local image generation app.
+
+Phase 1 goals:
+- Frontend: Vite + React + TypeScript + Tailwind CSS.
+- Backend: FastAPI with production-grade folder structure.
+- Model inference: local Stable Diffusion v1.5 `.safetensors` plus local YAML config file.
+- Inference stack: `diffusers + torch`.
+- Execution mode: CPU only. GPU must remain disabled.
+- Python target: 3.10.13.
+
+Important local paths:
+- Base model: `/home/seechan1/Desktop/comics/models/basemodel/v1-5-pruned-emaonly.safetensors`
+- Base model YAML: `/home/seechan1/Desktop/comics/models/config_files/v1-inference.yaml`
+- Output directory: `/home/seechan1/Desktop/comics/output`
+
+Backend behavior requirements:
+- Load the model only for generation.
+- Use the YAML config when loading the model.
+- Use DPM++ 2M Karras scheduler.
+- Unload the pipeline from RAM after each generation.
+- Save generated images into the root `output/` directory.
+- Return CPU and RAM usage data for the UI after generation.
+
+Frontend behavior requirements:
+- Positive prompt input.
+- Negative prompt input.
+- Width and height controls, default `512 x 512`.
+- Steps control, default `20`.
+- CFG scale control, default `7.5`.
+- Seed control, supports positive and negative values, blank means random.
+- Preview section for the latest generated image.
+- Show CPU and RAM usage returned by the backend.
+
+Run scripts required:
+- Root script for backend startup.
+- Root script for frontend startup.
+
+Constraints:
+- Do not auto-run the app from the scaffold.
+- User will install packages manually.
