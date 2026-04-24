@@ -77,3 +77,25 @@ Phase 2 progress:
   - The original annotator loading path was incorrect for offline local files because `LineartDetector.from_pretrained()` only loads direct local files when given a directory path, not a repo id plus cache dir.
   - `ControlNetModel.from_single_file()` also needs a local Diffusers config directory for the lineart checkpoint; otherwise it tries to infer a repo config and may fall back to the wrong ControlNet variant.
   - `controlnet-aux` normally wants additional transitive packages and may try to resolve a newer PyTorch stack if installed unconstrained. The requested packages were installed without dependency upgrades to avoid breaking the existing backend environment.
+
+Phase 3 progress:
+- Step 1 complete: read the current `context.txt` and inspected the existing Phase 2 frontend.
+- Step 1 complete: committed the finished Phase 2 ControlNet work on branch `ControllNET`.
+- Step 1 complete: merged `ControllNET` into `main`.
+- Step 1 complete: created branch `canvas` from the merged `main` branch.
+- Step 2 complete: added the third frontend mode toggle: `Canvas Compose`.
+- Step 2 complete: Canvas Compose now supports:
+  - multiple component uploads via `Add Component to Canvas`
+  - drag to reposition
+  - bottom-right resize handle
+  - delete via per-component `X` button
+  - click-to-front layering
+  - canvas resizing tied to the width and height generation controls
+  - `Clear Canvas`
+- Step 2 complete: canvas export now flattens all components onto a white background PNG and reuses the existing Phase 2 multipart ControlNet request logic.
+- Step 2 complete: switching modes preserves prompt and generation parameter values because all modes share the same frontend form state.
+- Step 2 complete: Canvas Compose displays the editable canvas first and then shows the same lineart preview plus generated output pair after generation.
+- Pending:
+  - None for the requested Phase 3 frontend work
+- Issues found:
+  - No backend changes were made for Phase 3 by design.
