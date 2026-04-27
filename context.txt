@@ -99,3 +99,169 @@ Phase 3 progress:
   - None for the requested Phase 3 frontend work
 - Issues found:
   - No backend changes were made for Phase 3 by design.
+
+Phase 4 progress:
+- Step 1 complete: read the current `context.txt` first and inspected the existing backend/frontend wiring to avoid redoing finished Phase 2 and Phase 3 work.
+- Step 2 complete: added backend LoRA configuration and request plumbing for all three generation modes.
+- Step 2 complete: Normal generation now accepts `lora_style` and `lora_strength`, loads the selected LoRA before inference, applies `cross_attention_kwargs={"scale": ...}`, and unloads LoRA weights before pipeline cleanup.
+- Step 2 complete: ControlNet Lineart and Canvas Compose now accept the same `lora_style` and `lora_strength` inputs, load the selected LoRA after pipeline init, apply the LoRA scale during inference, and unload LoRA weights before deleting the pipeline.
+- Step 2 complete: added `GET /api/lora/styles` in `backend/app/api/routes/lora.py` and registered it in `backend/app/main.py`.
+- Step 3 complete: frontend now fetches `GET /api/lora/styles` on load and populates the `Art Style` dropdown dynamically instead of hardcoding the style list.
+- Step 3 complete: added shared `Art Style` and `Style Strength` controls to the Prompt Controls section for Normal, ControlNet Lineart, and Canvas Compose.
+- Step 3 complete: the style dropdown defaults to the first backend-provided style, has no empty option, and changing the style resets the strength slider to that style's `default_strength`.
+- Step 3 complete: Normal JSON requests and ControlNet multipart requests now include `lora_style` and `lora_strength`.
+- Step 4 complete: verification passed for the requested Phase 4 changes.
+- Step 4 complete: backend validation passed with `python3 -m compileall /home/seechan1/Desktop/comics/backend/app`.
+- Step 4 complete: frontend production build passed with `npm run build`.
+- Step 4 complete: added `frontend/src/vite-env.d.ts` because the repo was missing the standard Vite `ImportMeta.env` type declaration needed for the existing API env usage to type-check during the build.
+- Step 5 complete: checked the live `/home/seechan1/Desktop/comics/models/lora` directory after a runtime LoRA path failure and confirmed the comic LoRA file was renamed on disk to `Comic_book_V2.safetensors`.
+- Step 5 complete: updated `backend/app/core/config.py` so the `comic` LoRA style now points to `/home/seechan1/Desktop/comics/models/lora/Comic_book_V2.safetensors`.
+- Step 6 complete: addressed the runtime `PEFT backend is required for this method` LoRA failure.
+- Step 6 complete: added `peft==0.14.0` to `backend/requirements.txt` to match the existing `diffusers==0.33.1` LoRA loading approach.
+- Step 6 complete: added an explicit runtime guard in both LoRA-enabled pipelines so the backend now raises a clear install message if `peft` is missing from the active backend environment.
+- Step 7 complete: fixed the offline Diffusers LoRA loading call signature.
+- Step 7 complete: both LoRA-enabled pipelines now call `load_lora_weights(<local directory>, weight_name=<filename>, local_files_only=True)` instead of passing a single file path, which avoids the offline-mode `weight_name` error.
+- Step 8 complete: inspected the local LoRA checkpoint formats and found that `AnimeAnything_SD15.safetensors` includes unsupported `.diff_b` keys while the other two LoRAs are standard Kohya-style checkpoints.
+- Step 8 complete: added `backend/app/services/lora_utils.py` to normalize local LoRA checkpoints before loading.
+- Step 8 complete: both generation pipelines now load LoRA weights from an in-memory cleaned state dict and filter unsupported `.diff_b` entries before calling Diffusers, avoiding the rename failure raised by `lora_conversion_utils.py`.
+- Step 9 complete: verification passed for the checkpoint normalization fix without running the application itself.
+- Step 9 complete: backend source compilation passed with `python3 -m compileall /home/seechan1/Desktop/comics/backend/app`.
+- Step 9 complete: verified all three local LoRA files against the installed Diffusers LoRA conversion path using the backend virtualenv; after preprocessing, no `.diff_b` keys remain and the conversion step succeeds for `AnimeAnything_SD15.safetensors`, `animeoutlineV4_16.safetensors`, and `Comic_book_V2.safetensors`.
+- Step 10 complete: replaced the previous Diffusers/PEFT LoRA loading path with the requested custom A1111/kohya remap-and-merge loader in `backend/app/services/lora_loader.py`.
+- Step 10 complete: `backend/app/services/pipeline.py` now snapshots the original UNet and text encoder weights, applies LoRA via `load_a1111_lora_into_pipeline(...)`, and restores the original weights with `unload_lora_from_pipeline(...)` after generation.
+- Step 10 complete: `backend/app/services/controlnet_pipeline.py` now uses the same snapshot, manual-merge, and restore pattern for ControlNet Lineart and Canvas Compose generation.
+- Step 10 complete: backend source compilation passed with `python3 -m compileall /home/seechan1/Desktop/comics/backend/app` after the custom A1111 LoRA loader swap.
+- Step 11 complete: fixed the Conv2d LoRA composition bug in `backend/app/services/lora_loader.py`.
+- Step 11 complete: the custom loader now composes 4D LoRA weights with explicit tensor contraction instead of flattening and reshaping incompatible 3x3 conv weights, which resolves the invalid reshape error for `AnimeAnything_SD15.safetensors`.
+- Step 11 complete: backend source compilation passed again with `python3 -m compileall /home/seechan1/Desktop/comics/backend/app`.
+- Step 11 complete: verified all local 4D LoRA pairs against the new Conv2d composition helper in the backend virtualenv:
+  - `AnimeAnything_SD15.safetensors`: 98 / 98 conv pairs composed successfully
+  - `animeoutlineV4_16.safetensors`: 32 / 32 conv pairs composed successfully
+  - `Comic_book_V2.safetensors`: 0 conv pairs present
+- Pending:
+  - None for the requested Phase 4 LoRA style selection work
+- Issues found:
+  - The existing Phase 1 route file is `backend/app/api/routes/generation.py` rather than `generate.py`, so the LoRA JSON body support is handled through the existing schema-backed route instead of creating a duplicate file.
+
+Phase 5 progress:
+- Step 1 complete: read `context.txt` first and inspected the existing backend/frontend structure to avoid redoing completed Phase 4 work.
+- Step 2 complete: added `backend/app/services/inpaint_pipeline.py` for CPU-only Stable Diffusion v1.5 inpainting from the local inpainting safetensors checkpoint using `from_single_file()`, the existing YAML config, DPM++ 2M Karras scheduler, local LoRA loading via `lora_loader.py`, and post-run LoRA unload plus pipeline cleanup.
+- Step 2 complete: added `backend/app/api/routes/inpaint.py` with `POST /api/inpaint/generate` multipart handling, `/tmp` temp file creation, cleanup in `finally`, and JSON response fields for output URL, CPU usage, RAM usage, seed, and generation time.
+- Step 2 complete: registered the new inpaint router in `backend/app/main.py` without changing existing routes.
+- Step 3 complete: added the frontend post-generation `Edit this image` flow across Normal, ControlNet Lineart, and Canvas Compose results.
+- Step 3 complete: the frontend now reveals a dedicated inpainting panel only after the edit button is clicked, preloads the selected generated image automatically, and scrolls the user to the editor.
+- Step 3 complete: added the inpainting panel controls for prompt, negative prompt, shared LoRA style dropdown, style strength, width, height, steps, CFG scale, seed, brush size, erase mode, and clear mask.
+- Step 3 complete: added the inpainting mask canvas with red semi-transparent overlay for display, black/white export canvas for the real mask, and multipart submission to the new `/api/inpaint/generate` endpoint.
+- Step 3 complete: inpaint results now support default side-by-side comparison against the original source image with a toggle for `Show Result Only`.
+- Step 4 complete: non-runtime verification passed for the Phase 5 inpainting flow.
+- Step 4 complete: backend source compilation passed with `python3 -m compileall /home/seechan1/Desktop/comics/backend/app`.
+- Step 4 complete: frontend production build passed with `npm run build`.
+- Step 5 complete: fixed the inpainting checkpoint load mismatch in `backend/app/services/inpaint_pipeline.py` by overriding `num_in_channels=9` when loading `sd-v1-5-inpainting.safetensors` through `StableDiffusionInpaintPipeline.from_single_file(...)`.
+- Step 5 complete: this aligns the inpainting UNet `conv_in.weight` shape with the checkpoint's 9-channel input format instead of the base SD1.5 4-channel YAML default.
+- Pending:
+  - None for the requested Phase 5 inpainting flow
+
+Phase 6 progress:
+- Step 1 complete: read `context.txt` first and inspected the existing Phase 5 frontend inpaint flow to avoid redoing completed backend and frontend work.
+- Step 2 complete: added the fourth frontend mode toggle `Upload & Inpaint` alongside `Normal`, `ControlNet Lineart`, and `Canvas Compose` without changing any backend routes or pipeline files.
+- Step 2 complete: Upload & Inpaint now reuses the existing Phase 5 `POST /api/inpaint/generate` multipart request path through shared frontend submission logic instead of duplicating fetch behavior.
+- Step 2 complete: Upload & Inpaint now supports:
+  - PNG, JPG, and WEBP upload
+  - filename and thumbnail preview
+  - prompt, negative prompt, LoRA style, style strength, steps, CFG, and seed controls
+  - width and height fields prefilled from the uploaded image natural dimensions with manual override support
+  - brush size, draw/erase toggle, and clear mask controls
+  - disabled generate button until an image is uploaded
+  - empty dashed canvas state before upload
+  - uploaded-image canvas background with red overlay drawing and black/white PNG mask export
+  - result display with default side-by-side original/result comparison and usage metrics
+- Step 2 complete: switching between all four generation modes preserves their prompt and parameter state, and the existing post-generation inpaint editor remains available for Phase 5 flows.
+- Step 3 complete: verification passed for the requested Phase 6 frontend changes.
+- Step 3 complete: frontend production build passed with `npm run build`.
+- Pending:
+  - None for the requested Phase 6 Upload & Inpaint mode
+
+Phase 7 progress:
+- Step 1 complete: read `context.txt` first and inspected the existing backend/frontend generation flows to avoid redoing completed Phase 6 work.
+- Step 2 complete: verified `ip-adapter` package compatibility for Python 3.10 before installation.
+- Step 2 complete: confirmed from PyPI metadata that `ip-adapter 0.1.0` declares `Requires: Python >=3.6` and includes a `Python :: 3.10` classifier.
+- Step 2 complete: installed `ip-adapter==0.1.0` successfully into `backend/.venv` using `backend/.venv/bin/pip install ip-adapter`, so the GitHub fallback was not needed.
+- Step 3 complete: added `backend/app/services/ip_adapter_pipeline.py` for CPU-only IP-Adapter Plus generation using the local base SD1.5 checkpoint, local YAML config, local IP-Adapter weights, local CLIP vision encoder files, DPM++ 2M Karras scheduling, and the existing A1111 LoRA load/unload path.
+- Step 3 complete: the new IP-Adapter service prepares the required local image encoder folder layout by ensuring `pytorch_model.bin` and `config.json` exist in `/home/seechan1/Desktop/comics/models/ip-adapter/` via local symlink or copy from `image_encoder.bin` and `image_encoder_config.json`.
+- Step 3 complete: the new IP-Adapter service applies LoRA before generation, resolves random seeds on CPU, loads multiple reference images from local temp paths, combines their visual conditioning in a single request, saves the generated image into `/output/`, and explicitly deletes the IP-Adapter model and pipeline followed by `gc.collect()`.
+- Step 3 complete: added `backend/app/api/routes/ip_adapter.py` with `POST /api/ip-adapter/generate`, multipart handling for repeated `reference_images` fields, `/tmp` temp file creation for each upload, and `finally` cleanup for all temp files.
+- Step 3 complete: registered the new IP-Adapter router in `backend/app/main.py` without changing existing routes.
+- Step 4 complete: added the fifth frontend mode toggle `IP-Adapter` alongside `Normal`, `ControlNet Lineart`, `Canvas Compose`, and `Upload & Inpaint`.
+- Step 4 complete: IP-Adapter mode now supports:
+  - multi-image upload with PNG, JPG, and WEBP support
+  - thumbnail grid preview for all uploaded reference images
+  - per-image remove buttons
+  - upload-more behavior after the initial selection
+  - shared prompt, negative prompt, LoRA style, style strength, width, height, steps, CFG, and seed controls
+  - `Reference Strength` slider mapped to `ip_adapter_scale`
+  - disabled generate button until at least one reference image is uploaded
+  - multipart submission to `POST /api/ip-adapter/generate` with repeated `reference_images` fields
+  - generated result preview plus system usage metrics
+- Step 4 complete: switching between all five generation modes preserves prompt and parameter state, and the existing modes remain intact.
+- Step 5 complete: verification passed for the requested Phase 7 backend and frontend changes.
+- Step 5 complete: backend source compilation passed with `python3 -m compileall /home/seechan1/Desktop/comics/backend/app`.
+- Step 5 complete: frontend production build passed with `npm run build`.
+- Step 5 complete: verified the new IP-Adapter service can prepare the required local image encoder folder layout in `/home/seechan1/Desktop/comics/models/ip-adapter/`, including `pytorch_model.bin` and `config.json`.
+- Step 6 complete: fixed `backend/app/services/lora_loader.py` A1111 LoRA key remapping so UNet and text encoder mapped paths strip leading/trailing dots and collapse double dots before returning Diffusers paths.
+- Step 6 complete: verified `AnimeAnything_SD15.safetensors` remapping in the backend virtualenv with `Good: 279, None: 3, Double dot: 0`, confirming no corrupted double-dot Diffusers paths remain.
+- Step 7 complete: fixed a follow-up LoRA remap issue where base-key remapping returned trailing-dot module paths when no suffix was present, causing the manual LoRA loader to skip all layers.
+- Step 7 complete: fixed `backend/app/services/ip_adapter_pipeline.py` attention processor block parsing to match the installed `ip-adapter` implementation and avoid `invalid literal for int()` on names like `down_blocks.0.attentions.0...`.
+- Step 7 complete: verification passed in the backend virtualenv:
+  - LoRA remap check: `Good: 279, None: 3, Double dot: 0, Trailing dot: 0`
+  - IP-Adapter attention processor setup with representative Diffusers processor names: `Attention processors set: 4`
+  - Local base-pipeline LoRA target compatibility: `Resolved: 276, Shape match: 275, Missing/skipped: 6, Shape mismatch: 1`
+- Step 8 complete: fixed the IP-Adapter cleanup state-dict mismatch in `backend/app/services/ip_adapter_pipeline.py` by restoring the original UNet attention processors before unloading LoRA weights.
+- Step 8 complete: this resolves the missing `to_k_ip.weight` / `to_v_ip.weight` keys that occurred when `unload_lora_from_pipeline(...)` tried to restore a pre-IP-Adapter UNet snapshot into a UNet still using IP-Adapter attention processors.
+- Step 8 complete: backend virtualenv verification passed with `IP-Adapter lifecycle cleanup passed` after loading the local base pipeline, applying LoRA, installing IP-Adapter processors from the local checkpoint, restoring original processors, and unloading LoRA.
+- Step 9 diagnostic complete: ran the requested stock `IPAdapterPlus` diagnostics in the backend virtualenv without changing code.
+- Step 9 diagnostic finding: IP-Adapter loaded without a load-time exception, with `image_encoder type: <class 'transformers.models.clip.modeling_clip.CLIPVisionModelWithProjection'>` and `ip_layers type: <class 'NoneType'>`.
+- Step 9 diagnostic finding: the CLIP image encoder processed a solid red reference image successfully:
+  - `CLIP input shape: torch.Size([1, 3, 224, 224])`
+  - `Image embeds shape: torch.Size([1, 1024])`
+  - `Image embeds mean: -0.0031795501708984375`
+  - `Image embeds std: 0.634765625`
+- Step 9 diagnostic finding: the requested minimal generation did not save `/home/seechan1/Desktop/comics/output/ip_diagnostic_test.png`; generation failed at the first denoising step with `RuntimeError: expected m1 and m2 to have the same dtype, but got: float != c10::Half`.
+- Step 9 diagnostic conclusion: the image encoder is producing nonzero embeddings, so the blank-output investigation should focus on IP-Adapter generation dtype/runtime integration rather than a dead image encoder.
+- Step 10 complete: corrected IP-Adapter multi-reference behavior in `backend/app/services/ip_adapter_pipeline.py` without changing other generation modes.
+- Step 10 complete: the backend now preserves single-reference IP-Adapter behavior, but for multiple uploaded reference parts it builds one 512x512 composite reference image before CLIP/IP-Adapter encoding instead of averaging separate image embeddings.
+- Step 10 complete: the compositor crops visible content from each uploaded part, uses a neutral background, and for four-part uploads treats the last image as the base/hair reference with the first three arranged as eyes, mouth, and nose.
+- Step 10 verification passed:
+  - `python -m compileall app/services/ip_adapter_pipeline.py`
+  - synthetic four-part compositor check returned `Composite size: (512, 512)` and `Composite mode: RGB`
+  - reduced end-to-end IP-Adapter service smoke test completed and saved `output/ip_adapter_20260427T083251Z_c3677081.png`; image stats showed non-blank output with extrema `((32, 255), (44, 255), (63, 255))`
+- Step 10 note: the smoke test exposed an unrelated Comic Book LoRA limitation, `LoRA applied: 0 layers, skipped: 642 layers`, which was not changed as part of the IP-Adapter output correction.
+- Step 11 complete: added a frontend `Art Style (LoRA)` on/off toggle in the Prompt Controls section, defaulting to ON and persisting while switching between all five modes.
+- Step 11 complete: when the toggle is OFF, Art Style and Style Strength controls remain visible but are dimmed, and all generation payloads send `lora_strength` as `0.0` for Normal, ControlNet Lineart, Canvas Compose, Upload & Inpaint, IP-Adapter, and the post-generation inpaint editor.
+- Step 11 complete: added the requested guard at the start of `backend/app/services/lora_loader.py::load_a1111_lora_into_pipeline(...)` so `lora_strength == 0.0` returns the pipeline unchanged.
+- Step 11 verification passed:
+  - backend loader compile: `.venv/bin/python -m compileall app/services/lora_loader.py`
+  - frontend production build: `npm run build`
+- Step 12 complete: re-enabled Diffusers backend progress bars for Normal, ControlNet Lineart, Canvas Compose, Upload & Inpaint, and IP-Adapter generation so the backend terminal shows denoising step progress during image generation.
+- Step 12 verification passed with backend compilation of `pipeline.py`, `controlnet_pipeline.py`, `inpaint_pipeline.py`, and `ip_adapter_pipeline.py`.
+- Step 13 complete: added frontend-only Canvas Compose component editing tools without changing backend code or other modes.
+- Step 13 complete: selected canvas components now show an orange dashed selection border, clicking empty canvas space deselects, and a floating toolbar follows the selected component with Scale, Rotate, and Layer controls.
+- Step 13 complete: Canvas Compose now supports numeric scale and rotation inputs, bottom-left and bottom-right resize handles with aspect-ratio locking by default, Shift+drag free resize, a top rotation handle, Shift rotation snapping to 45-degree increments, layer buttons for front/forward/backward/back, and keyboard shortcuts for Delete/Backspace, Arrow nudging, Shift+Arrow nudging, and Escape deselect.
+- Step 13 complete: canvas export still produces a flat white-background PNG and now reflects component position, scale, z-index, and rotation.
+- Step 13 verification passed with frontend production build: `npm run build`.
+- Step 14 complete: updated the Canvas Compose rotate numeric input to allow negative degree values and keep the signed value visible in the toolbar while preserving render/export rotation behavior.
+- Step 14 verification passed with frontend production build: `npm run build`.
+- Step 15 complete: added Denoise Strength controls to the shared generation controls and the post-generation inpaint editor.
+- Step 15 complete: frontend now sends `denoise_strength` in Normal, ControlNet Lineart, Canvas Compose, Upload & Inpaint, IP-Adapter, and post-generation inpaint payloads.
+- Step 15 complete: backend request handlers and schemas now accept `denoise_strength`; the inpaint pipeline applies it through Diffusers `strength=...`, while Normal, ControlNet, Canvas, and IP-Adapter accept the value for UI/API consistency but do not pass it to unsupported pipeline calls.
+- Step 15 complete: adjusted the normal generation schema to allow `lora_strength=0.0`, matching the existing LoRA-off toggle behavior.
+- Step 15 verification passed:
+  - backend compile: `.venv/bin/python -m compileall app`
+  - frontend production build: `npm run build`
+- Step 16 diagnostic complete: checked the inpainting route/service wiring, required local model files, mask canvas flow, and local inpainting smoke behavior.
+- Step 16 diagnostic finding: required inpainting assets exist, including `/home/seechan1/Desktop/comics/models/inpainting/sd-v1-5-inpainting.safetensors` and `/home/seechan1/Desktop/comics/models/config_files/v1-inference.yaml`.
+- Step 16 diagnostic finding: a backend inpaint smoke test with synthetic init/mask images, LoRA disabled, `steps=2`, and `denoise_strength=0.75` completed successfully and saved `output/inpaint_20260427T101543Z_506ca80f.png`.
+- Step 16 diagnostic finding: the saved smoke output was non-empty with size `(128, 128)` and extrema `((110, 231), (63, 145), (75, 195))`.
+- Step 16 issue found: inpaint can fail when `steps` is too low for the chosen `denoise_strength`; `steps=1` with `denoise_strength=0.75` raised `ValueError: After adjusting the num_inference_steps by strength parameter: 0.75, the number of pipelinesteps is 0 which is < 1 and not appropriate for this pipeline.`
+- Step 16 note: this is a parameter validation edge case rather than missing inpainting tools/models; using higher steps, such as the default 20, avoids this failure.
+- Pending:
+  - None for the requested Phase 7 IP-Adapter mode

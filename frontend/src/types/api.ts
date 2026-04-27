@@ -5,7 +5,16 @@ export type GenerateImageRequest = {
   height: number;
   steps: number;
   cfg_scale: number;
+  denoise_strength: number;
   seed: number | null;
+  lora_style: string;
+  lora_strength: number;
+};
+
+export type LoraStyleOption = {
+  key: string;
+  label: string;
+  default_strength: number;
 };
 
 export type SystemMetrics = {
@@ -42,4 +51,22 @@ export type ControlNetGenerateResponse = {
   generation_time_seconds: number;
   image_filename: string;
   preprocessed_lineart_filename: string;
+};
+
+export type InpaintGenerateResponse = {
+  image_url: string;
+  cpu_usage: number;
+  ram_used: number;
+  ram_total: number;
+  seed_used: number;
+  generation_time_seconds: number;
+};
+
+export type IPAdapterGenerateResponse = {
+  image_url: string;
+  cpu_usage: number;
+  ram_used: number;
+  ram_total: number;
+  seed_used: number;
+  generation_time_seconds: number;
 };

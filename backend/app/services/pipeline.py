@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import copy
 import gc
-import os
 import threading
 from typing import Any
 
@@ -10,11 +10,8 @@ import yaml
 from diffusers import DPMSolverMultistepScheduler, StableDiffusionPipeline
 from PIL import Image
 
-from app.core.config import get_settings
-
-
-# Force CPU-only inference even on machines with CUDA available.
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+from app.core.config import LORA_PATHS, get_settings
+from app.services.lora_loader import load_a1111_lora_into_pipeline, unload_lora_from_pipeline
 
 
 class PipelineManager:
@@ -32,11 +29,20 @@ class PipelineManager:
         height: int,
         steps: int,
         cfg_scale: float,
+        denoise_strength: float,
         seed: int,
+        lora_style: str,
+        lora_strength: float,
     ) -> Image.Image:
         with self._lock:
             pipeline = self._load_pipeline()
+            lora_path = self._get_lora_path(lora_style)
+            original_unet_state = copy.deepcopy(pipeline.unet.state_dict())
+            original_te_state = copy.deepcopy(pipeline.text_encoder.state_dict())
+            lora_loaded = False
             try:
+                pipeline = load_a1111_lora_into_pipeline(pipeline, lora_path, lora_strength)
+                lora_loaded = True
                 generator = torch.Generator(device="cpu").manual_seed(seed)
                 result = pipeline(
                     prompt=positive_prompt,
@@ -49,6 +55,8 @@ class PipelineManager:
                 )
                 image = result.images[0]
             finally:
+                if lora_loaded:
+                    unload_lora_from_pipeline(pipeline, original_unet_state, original_te_state)
                 self._unload_pipeline()
 
         return image
@@ -71,7 +79,7 @@ class PipelineManager:
             algorithm_type="dpmsolver++",
             use_karras_sigmas=True,
         )
-        pipeline.set_progress_bar_config(disable=True)
+        pipeline.set_progress_bar_config(disable=False)
         pipeline.to("cpu")
         self._pipeline = pipeline
         return pipeline
@@ -91,3 +99,10 @@ class PipelineManager:
 
         if not isinstance(payload, dict) or not payload:
             raise RuntimeError("Model config YAML is empty or invalid.")
+
+    @staticmethod
+    def _get_lora_path(lora_style: str) -> str:
+        try:
+            return LORA_PATHS[lora_style]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported LoRA style: {lora_style}") from exc

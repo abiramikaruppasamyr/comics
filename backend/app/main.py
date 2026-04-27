@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import controlnet
+from app.api.routes import controlnet, inpaint, ip_adapter, lora
 from app.api.router import api_router
 from app.core.config import get_settings
 
@@ -35,3 +35,6 @@ app.add_middleware(
 app.mount("/output", StaticFiles(directory=settings.output_dir), name="output")
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 app.include_router(controlnet.router, prefix="/api/controlnet", tags=["controlnet"])
+app.include_router(inpaint.router, prefix="/api/inpaint", tags=["inpaint"])
+app.include_router(ip_adapter.router, prefix="/api/ip-adapter", tags=["ip-adapter"])
+app.include_router(lora.router, prefix="/api/lora", tags=["lora"])

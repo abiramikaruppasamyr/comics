@@ -12,7 +12,10 @@ class GenerateImageRequest(BaseModel):
     height: int = Field(default=512, ge=64, le=1024)
     steps: int = Field(default=20, ge=1, le=100)
     cfg_scale: float = Field(default=7.5, ge=1.0, le=30.0)
+    denoise_strength: float = Field(default=1.0, ge=0.0, le=1.0)
     seed: int | None = Field(default=None)
+    lora_style: str = Field(..., min_length=1)
+    lora_strength: float = Field(default=1.0, ge=0.0, le=2.0)
 
     @field_validator("width", "height")
     @classmethod

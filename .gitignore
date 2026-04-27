@@ -11,7 +11,7 @@ env/
 .coverage
 .coverage.*
 htmlcov/
-
+input/
 .env
 .env.*
 

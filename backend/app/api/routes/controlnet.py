@@ -16,8 +16,11 @@ async def generate_controlnet_image(
     height: int = Form(512),
     steps: int = Form(20),
     cfg_scale: float = Form(7.5),
+    denoise_strength: float = Form(1.0),
     seed: int = Form(-1),
     controlnet_conditioning_scale: float = Form(1.0),
+    lora_style: str = Form(...),
+    lora_strength: float = Form(1.0),
 ) -> dict[str, float | int | str]:
     try:
         image_bytes = await image.read()
@@ -31,8 +34,11 @@ async def generate_controlnet_image(
             height=height,
             steps=steps,
             cfg_scale=cfg_scale,
+            denoise_strength=denoise_strength,
             seed=seed,
             controlnet_conditioning_scale=controlnet_conditioning_scale,
+            lora_style=lora_style,
+            lora_strength=lora_strength,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

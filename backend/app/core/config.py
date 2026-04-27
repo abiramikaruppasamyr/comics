@@ -5,6 +5,13 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+LORA_PATHS = {
+    "anime": "/home/seechan1/Desktop/comics/models/lora/AnimeAnything_SD15.safetensors",
+    "manga": "/home/seechan1/Desktop/comics/models/lora/animeoutlineV4_16.safetensors",
+    "comic": "/home/seechan1/Desktop/comics/models/lora/Comic_book_V2.safetensors",
+}
+
+
 class Settings(BaseSettings):
     app_name: str = "Comics Local Generator API"
     app_env: str = "development"
@@ -27,6 +34,16 @@ class Settings(BaseSettings):
     )
     controlnet_annotator_cache_dir: Path = Field(
         default=Path("/home/seechan1/Desktop/comics/models/controlnet/annotators")
+    )
+    ip_adapter_dir: Path = Field(default=Path("/home/seechan1/Desktop/comics/models/ip-adapter"))
+    ip_adapter_model_path: Path = Field(
+        default=Path("/home/seechan1/Desktop/comics/models/ip-adapter/ip-adapter-plus_sd15.bin")
+    )
+    ip_adapter_image_encoder_weights_path: Path = Field(
+        default=Path("/home/seechan1/Desktop/comics/models/ip-adapter/image_encoder.bin")
+    )
+    ip_adapter_image_encoder_config_path: Path = Field(
+        default=Path("/home/seechan1/Desktop/comics/models/ip-adapter/image_encoder_config.json")
     )
     output_dir: Path = Field(default=Path("/home/seechan1/Desktop/comics/output"))
     default_width: int = 512

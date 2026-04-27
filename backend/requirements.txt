@@ -10,5 +10,7 @@ torch==2.4.1
 diffusers==0.33.1
 transformers==4.46.3
 accelerate==1.5.2
+peft==0.14.0
 controlnet-aux==0.0.10
 opencv-python==4.10.0.84
+ip-adapter==0.1.0
