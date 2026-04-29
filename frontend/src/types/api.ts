@@ -53,7 +53,7 @@ export type ControlNetGenerateResponse = {
   preprocessed_lineart_filename: string;
 };
 
-export type InpaintGenerateResponse = {
+export type IPAdapterGenerateResponse = {
   image_url: string;
   cpu_usage: number;
   ram_used: number;
@@ -62,11 +62,27 @@ export type InpaintGenerateResponse = {
   generation_time_seconds: number;
 };
 
-export type IPAdapterGenerateResponse = {
+export type InpaintRequest = {
+  prompt: string;
+  negative_prompt: string;
+  control_image_file?: File | null;
+  width: number;
+  height: number;
+  steps: number;
+  guidance_scale: number;
+  strength: number;
+  seed: number;
+};
+
+export type InpaintResponse = {
+  image_base64: string;
+  image_filename: string;
   image_url: string;
   cpu_usage: number;
   ram_used: number;
   ram_total: number;
   seed_used: number;
+  steps_used: number;
+  pipeline_steps: number;
   generation_time_seconds: number;
 };

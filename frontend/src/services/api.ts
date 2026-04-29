@@ -3,7 +3,8 @@ import type {
   GenerateImageRequest,
   GenerateImageResponse,
   IPAdapterGenerateResponse,
-  InpaintGenerateResponse,
+  InpaintRequest,
+  InpaintResponse,
   LoraStyleOption,
   SystemMetrics,
 } from "../types/api";
@@ -80,21 +81,6 @@ export async function generateControlNetImage(
   };
 }
 
-export async function generateInpaintImage(
-  payload: FormData,
-): Promise<InpaintGenerateResponse> {
-  const response = await fetch(`${INPAINT_API_BASE_URL}/generate`, {
-    method: "POST",
-    body: payload,
-  });
-
-  const data = await parseResponse<InpaintGenerateResponse>(response);
-  return {
-    ...data,
-    image_url: `${OUTPUT_BASE_URL}${data.image_url}`,
-  };
-}
-
 export async function generateIPAdapterImage(
   payload: FormData,
 ): Promise<IPAdapterGenerateResponse> {
@@ -108,4 +94,32 @@ export async function generateIPAdapterImage(
     ...data,
     image_url: `${OUTPUT_BASE_URL}${data.image_url}`,
   };
+}
+
+export async function inpaintImage(
+  imageFile: File,
+  maskBlob: Blob,
+  params: InpaintRequest,
+): Promise<InpaintResponse> {
+  const payload = new FormData();
+  payload.append("image", imageFile);
+  payload.append("mask", maskBlob, "inpaint-mask.png");
+  if (params.control_image_file) {
+    payload.append("control_image", params.control_image_file);
+  }
+  payload.append("prompt", params.prompt);
+  payload.append("negative_prompt", params.negative_prompt);
+  payload.append("width", String(params.width));
+  payload.append("height", String(params.height));
+  payload.append("steps", String(params.steps));
+  payload.append("guidance_scale", String(params.guidance_scale));
+  payload.append("strength", String(params.strength));
+  payload.append("seed", String(params.seed));
+
+  const response = await fetch(INPAINT_API_BASE_URL, {
+    method: "POST",
+    body: payload,
+  });
+
+  return parseResponse<InpaintResponse>(response);
 }

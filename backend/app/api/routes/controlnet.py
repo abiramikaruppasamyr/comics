@@ -1,10 +1,17 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.services.controlnet_pipeline import ControlNetLineartService
-
 
 router = APIRouter()
-controlnet_service = ControlNetLineartService()
+controlnet_service = None
+
+
+def get_controlnet_service():
+    global controlnet_service
+    if controlnet_service is None:
+        from app.services.controlnet_pipeline import ControlNetLineartService
+
+        controlnet_service = ControlNetLineartService()
+    return controlnet_service
 
 
 @router.post("/generate")
@@ -26,7 +33,7 @@ async def generate_controlnet_image(
         image_bytes = await image.read()
         if not image_bytes:
             raise ValueError("Uploaded image is empty.")
-        return controlnet_service.generate(
+        return get_controlnet_service().generate(
             image_bytes=image_bytes,
             positive_prompt=positive_prompt,
             negative_prompt=negative_prompt,

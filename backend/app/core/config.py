@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     controlnet_annotator_cache_dir: Path = Field(
         default=Path("/home/seechan1/Desktop/comics/models/controlnet/annotators")
     )
+    inpaint_model_path: Path = Field(
+        default=Path("/home/seechan1/Desktop/comics/models/inpainting/sd-v1-5-inpainting.safetensors")
+    )
     ip_adapter_dir: Path = Field(default=Path("/home/seechan1/Desktop/comics/models/ip-adapter"))
     ip_adapter_model_path: Path = Field(
         default=Path("/home/seechan1/Desktop/comics/models/ip-adapter/ip-adapter-plus_sd15.bin")

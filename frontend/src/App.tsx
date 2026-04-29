@@ -5,15 +5,15 @@ import {
   generateControlNetImage,
   generateImage,
   generateIPAdapterImage,
-  generateInpaintImage,
   getLoraStyles,
   getSystemMetrics,
+  inpaintImage,
 } from "./services/api";
 import type {
   ControlNetGenerateResponse,
   GenerateImageResponse,
   IPAdapterGenerateResponse,
-  InpaintGenerateResponse,
+  InpaintResponse,
   LoraStyleOption,
   SystemMetrics,
 } from "./types/api";
@@ -33,21 +33,6 @@ type FormState = {
   ipAdapterScale: number;
   loraStyle: string;
   loraStrength: number;
-};
-
-type InpaintFormState = {
-  positivePrompt: string;
-  negativePrompt: string;
-  loraStyle: string;
-  loraStrength: number;
-  width: number;
-  height: number;
-  steps: number;
-  cfgScale: number;
-  denoiseStrength: number;
-  seed: string;
-  brushSize: number;
-  eraseMode: boolean;
 };
 
 type CanvasComponent = {
@@ -102,42 +87,79 @@ type DragState =
       snapToAngles: boolean;
     };
 
-type EditableGeneratedImage = {
-  src: string;
-  name: string;
-  width: number;
-  height: number;
-  positivePrompt: string;
-  negativePrompt: string;
-  steps: number;
-  cfgScale: number;
-  denoiseStrength: number;
-  seed: string;
-  loraStyle: string;
-  loraStrength: number;
-  file?: File;
-};
-
 type NormalResultState = {
   response: GenerateImageResponse;
-  editable: EditableGeneratedImage;
 };
 
 type ControlResultState = {
   response: ControlNetGenerateResponse;
-  editable: EditableGeneratedImage;
-};
-
-type InpaintResultState = {
-  response: InpaintGenerateResponse;
-  original: EditableGeneratedImage;
 };
 
 type IPAdapterResultState = {
   response: IPAdapterGenerateResponse;
 };
 
+type InpaintFormState = {
+  prompt: string;
+  negativePrompt: string;
+  width: number;
+  height: number;
+  steps: number;
+  guidanceScale: number;
+  strength: number;
+  seed: string;
+  brushSize: number;
+};
+
+type InpaintSourceState = {
+  file: File;
+  src: string;
+  name: string;
+  width: number;
+  height: number;
+};
+
+type InpaintResultState = {
+  response: InpaintResponse;
+  imageUrl: string;
+};
+
+type InpaintMaskTool = "brush" | "lasso" | "rectangle";
+
+type InpaintPointerState = {
+  pointerId: number;
+  erase: boolean;
+  lastX: number;
+  lastY: number;
+  pendingDistance: number;
+};
+
+type InpaintSelectionState =
+  | {
+      type: "lasso";
+      pointerId: number;
+      points: Array<{ x: number; y: number }>;
+    }
+  | {
+      type: "rectangle";
+      pointerId: number;
+      startX: number;
+      startY: number;
+      currentX: number;
+      currentY: number;
+    };
+
+type InpaintCursorState = {
+  x: number;
+  y: number;
+  visible: boolean;
+};
+
 const MIN_COMPONENT_SIZE = 32;
+const DEFAULT_INPAINT_CANVAS_SIZE = 512;
+const MASK_BRUSH_SPACING_RATIO = 0.03;
+const MASK_BRUSH_FEATHER_PX = 30;
+const MASK_PREVIEW_FEATHER_PX = 12;
 
 function createInitialFormState(): FormState {
   return {
@@ -147,7 +169,7 @@ function createInitialFormState(): FormState {
     height: 512,
     steps: 20,
     cfgScale: 7.5,
-    denoiseStrength: 1.0,
+    denoiseStrength: 0.5,
     seed: "",
     controlnetConditioningScale: 1.0,
     ipAdapterScale: 0.6,
@@ -156,20 +178,17 @@ function createInitialFormState(): FormState {
   };
 }
 
-function createInitialInpaintState(source: EditableGeneratedImage | null, defaultStyle?: LoraStyleOption): InpaintFormState {
+function createInitialInpaintFormState(): InpaintFormState {
   return {
-    positivePrompt: source?.positivePrompt ?? "",
-    negativePrompt: source?.negativePrompt ?? "",
-    loraStyle: source?.loraStyle ?? defaultStyle?.key ?? "",
-    loraStrength: source?.loraStrength ?? defaultStyle?.default_strength ?? 1.0,
-    width: source?.width ?? 512,
-    height: source?.height ?? 512,
-    steps: source?.steps ?? 20,
-    cfgScale: source?.cfgScale ?? 7.5,
-    denoiseStrength: source?.denoiseStrength ?? 1.0,
-    seed: source?.seed ?? "-1",
-    brushSize: 20,
-    eraseMode: false,
+    prompt: "",
+    negativePrompt: "",
+    width: DEFAULT_INPAINT_CANVAS_SIZE,
+    height: DEFAULT_INPAINT_CANVAS_SIZE,
+    steps: 30,
+    guidanceScale: 7.5,
+    strength: 0.3,
+    seed: "-1",
+    brushSize: 36,
   };
 }
 
@@ -185,32 +204,31 @@ export default function App() {
   const [loraStyles, setLoraStyles] = useState<LoraStyleOption[]>([]);
   const [metrics, setMetrics] = useState<SystemMetrics | null>(null);
   const [loading, setLoading] = useState(false);
-  const [inpaintLoading, setInpaintLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [inpaintError, setInpaintError] = useState<string | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
-  const [inpaintSource, setInpaintSource] = useState<EditableGeneratedImage | null>(null);
-  const [inpaintForm, setInpaintForm] = useState<InpaintFormState>(createInitialInpaintState(null));
-  const [inpaintResult, setInpaintResult] = useState<InpaintResultState | null>(null);
-  const [showSideBySide, setShowSideBySide] = useState(true);
-  const [uploadInpaintSource, setUploadInpaintSource] = useState<EditableGeneratedImage | null>(null);
-  const [uploadInpaintForm, setUploadInpaintForm] = useState<InpaintFormState>(createInitialInpaintState(null));
-  const [uploadInpaintResult, setUploadInpaintResult] = useState<InpaintResultState | null>(null);
-  const [uploadInpaintError, setUploadInpaintError] = useState<string | null>(null);
-  const [showUploadSideBySide, setShowUploadSideBySide] = useState(true);
   const [ipAdapterReferenceImages, setIpAdapterReferenceImages] = useState<ReferenceImage[]>([]);
   const [ipAdapterResult, setIpAdapterResult] = useState<IPAdapterResultState | null>(null);
-  const [isMaskDrawing, setIsMaskDrawing] = useState(false);
+  const [inpaintSource, setInpaintSource] = useState<InpaintSourceState | null>(null);
+  const [inpaintControlSource, setInpaintControlSource] = useState<InpaintSourceState | null>(null);
+  const [inpaintForm, setInpaintForm] = useState<InpaintFormState>(createInitialInpaintFormState);
+  const [inpaintResult, setInpaintResult] = useState<InpaintResultState | null>(null);
+  const [inpaintTool, setInpaintTool] = useState<InpaintMaskTool>("brush");
+  const [inpaintPointer, setInpaintPointer] = useState<InpaintPointerState | null>(null);
+  const [inpaintSelection, setInpaintSelection] = useState<InpaintSelectionState | null>(null);
+  const [inpaintCursor, setInpaintCursor] = useState<InpaintCursorState>({ x: 0, y: 0, visible: false });
+  const [isInpaintMaskInverted, setIsInpaintMaskInverted] = useState(false);
+  const [isInpaintEraserEnabled, setIsInpaintEraserEnabled] = useState(false);
+  const [isInpaintSubtractEnabled, setIsInpaintSubtractEnabled] = useState(false);
+  const [inpaintMaskOpacity, setInpaintMaskOpacity] = useState(0.58);
+  const [showInpaintOriginal, setShowInpaintOriginal] = useState(false);
 
   const canvasStageRef = useRef<HTMLDivElement | null>(null);
-  const inpaintPanelRef = useRef<HTMLDivElement | null>(null);
-  const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const activeInpaintSource = mode === "upload-inpaint" ? uploadInpaintSource : inpaintSource;
-  const activeInpaintForm = mode === "upload-inpaint" ? uploadInpaintForm : inpaintForm;
+  const inpaintOverlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const inpaintMaskCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const inpaintMaskPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const inpaintMaskBufferRef = useRef<Float32Array | null>(null);
+  const inpaintUndoStackRef = useRef<Float32Array[]>([]);
   const mainLoraStrength = isLoraEnabled ? Number(form.loraStrength) : 0.0;
-  const uploadInpaintLoraStrength = isLoraEnabled ? Number(uploadInpaintForm.loraStrength) : 0.0;
-  const inpaintLoraStrength = isLoraEnabled ? Number(inpaintForm.loraStrength) : 0.0;
   const loraControlOpacity = isLoraEnabled ? "" : "opacity-50";
 
   useEffect(() => {
@@ -220,6 +238,33 @@ export default function App() {
   useEffect(() => {
     void loadLoraStyles();
   }, []);
+
+  useEffect(() => {
+    if (!inpaintSource) {
+      return;
+    }
+
+    initializeInpaintMask();
+  }, [inpaintSource, inpaintForm.width, inpaintForm.height]);
+
+  useEffect(() => {
+    renderInpaintPreview();
+    renderInpaintMaskPreview();
+  }, [inpaintMaskOpacity, isInpaintMaskInverted]);
+
+  useEffect(() => {
+    function handleInpaintUndo(event: KeyboardEvent) {
+      if (mode !== "upload-inpaint" || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "z") {
+        return;
+      }
+
+      event.preventDefault();
+      undoInpaintMask();
+    }
+
+    window.addEventListener("keydown", handleInpaintUndo);
+    return () => window.removeEventListener("keydown", handleInpaintUndo);
+  }, [mode, inpaintMaskOpacity, isInpaintMaskInverted]);
 
   useEffect(() => {
     setCanvasComponents((current) =>
@@ -236,22 +281,6 @@ export default function App() {
       }),
     );
   }, [form.width, form.height]);
-
-  useEffect(() => {
-    if (!activeInpaintSource) {
-      return;
-    }
-
-    initializeMaskCanvases();
-  }, [activeInpaintSource, activeInpaintForm.width, activeInpaintForm.height]);
-
-  useEffect(() => {
-    if (!inpaintSource || !inpaintPanelRef.current) {
-      return;
-    }
-
-    inpaintPanelRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [inpaintSource]);
 
   useEffect(() => {
     function handleCanvasKeyDown(event: KeyboardEvent) {
@@ -335,22 +364,6 @@ export default function App() {
           loraStrength: current.loraStyle === selectedStyle.key ? current.loraStrength : selectedStyle.default_strength,
         };
       });
-      setInpaintForm((current) => {
-        const selectedStyle = styles.find((style) => style.key === current.loraStyle) ?? styles[0];
-        return {
-          ...current,
-          loraStyle: selectedStyle.key,
-          loraStrength: current.loraStyle === selectedStyle.key ? current.loraStrength : selectedStyle.default_strength,
-        };
-      });
-      setUploadInpaintForm((current) => {
-        const selectedStyle = styles.find((style) => style.key === current.loraStyle) ?? styles[0];
-        return {
-          ...current,
-          loraStyle: selectedStyle.key,
-          loraStrength: current.loraStyle === selectedStyle.key ? current.loraStrength : selectedStyle.default_strength,
-        };
-      });
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Unable to load art styles.";
       setError(message);
@@ -365,17 +378,10 @@ export default function App() {
     setInpaintForm((current) => ({ ...current, [key]: value }));
   }
 
-  function updateUploadInpaintField<K extends keyof InpaintFormState>(key: K, value: InpaintFormState[K]) {
-    setUploadInpaintForm((current) => ({ ...current, [key]: value }));
-  }
-
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
     setError(null);
-    if (mode === "upload-inpaint") {
-      setUploadInpaintError(null);
-    }
 
     try {
       if (mode === "normal") {
@@ -398,20 +404,6 @@ export default function App() {
         const response = await generateImage(payload);
         setNormalResult({
           response,
-          editable: {
-            src: response.image.image_url,
-            name: response.image.filename,
-            width: response.image.width,
-            height: response.image.height,
-            positivePrompt: form.positivePrompt.trim(),
-            negativePrompt: form.negativePrompt.trim(),
-            steps: Number(form.steps),
-            cfgScale: Number(form.cfgScale),
-            denoiseStrength: Number(form.denoiseStrength),
-            seed: form.seed.trim() === "" ? "-1" : form.seed.trim(),
-            loraStyle: form.loraStyle,
-            loraStrength: mainLoraStrength,
-          },
         });
         setMetrics(response.system);
       } else if (mode === "controlnet") {
@@ -435,14 +427,19 @@ export default function App() {
           memory_used_mb: response.ram_used,
           memory_available_mb: Number((response.ram_total - response.ram_used).toFixed(1)),
         });
-      } else {
-        if (!uploadInpaintSource) {
-          throw new Error("Upload an image before generating.");
+      } else if (mode === "upload-inpaint") {
+        if (!inpaintSource) {
+          throw new Error("Upload a base image before running inpaint.");
         }
-
-        const response = await submitInpaintRequest(uploadInpaintSource, uploadInpaintForm);
-        setUploadInpaintResult({ response, original: uploadInpaintSource });
-        setShowUploadSideBySide(true);
+        if (!hasInpaintMaskPainted()) {
+          throw new Error("Paint a mask before running inpaint.");
+        }
+        const response = await submitInpaintRequest(inpaintSource);
+        setInpaintResult({
+          response,
+          imageUrl: `data:image/png;base64,${response.image_base64}`,
+        });
+        setShowInpaintOriginal(false);
         setMetrics({
           cpu_percent: response.cpu_usage,
           memory_percent: Number(((response.ram_used / response.ram_total) * 100).toFixed(1)),
@@ -480,20 +477,6 @@ export default function App() {
     const response = await generateControlNetImage(payload);
     setControlNetResult({
       response,
-      editable: {
-        src: response.image_url,
-        name: response.image_filename,
-        width: Number(form.width),
-        height: Number(form.height),
-        positivePrompt: form.positivePrompt.trim(),
-        negativePrompt: form.negativePrompt.trim(),
-        steps: Number(form.steps),
-        cfgScale: Number(form.cfgScale),
-        denoiseStrength: Number(form.denoiseStrength),
-        seed: form.seed.trim() === "" ? "-1" : form.seed.trim(),
-        loraStyle: form.loraStyle,
-        loraStrength: mainLoraStrength,
-      },
     });
     setMetrics({
       cpu_percent: response.cpu_usage,
@@ -501,85 +484,6 @@ export default function App() {
       memory_used_mb: response.ram_used,
       memory_available_mb: Number((response.ram_total - response.ram_used).toFixed(1)),
     });
-  }
-
-  async function handleInpaintSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!inpaintSource) {
-      return;
-    }
-
-    setInpaintLoading(true);
-    setInpaintError(null);
-
-    try {
-      const response = await submitInpaintRequest(inpaintSource, inpaintForm);
-      setInpaintResult({ response, original: inpaintSource });
-      setShowSideBySide(true);
-      setMetrics({
-        cpu_percent: response.cpu_usage,
-        memory_percent: Number(((response.ram_used / response.ram_total) * 100).toFixed(1)),
-        memory_used_mb: response.ram_used,
-        memory_available_mb: Number((response.ram_total - response.ram_used).toFixed(1)),
-      });
-    } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : "Unable to generate inpaint result.";
-      setInpaintError(message);
-    } finally {
-      setInpaintLoading(false);
-    }
-  }
-
-  async function submitInpaintRequest(source: EditableGeneratedImage, currentForm: InpaintFormState) {
-    if (!currentForm.loraStyle) {
-      throw new Error("Select an art style before generating.");
-    }
-
-    const initFile = source.file ?? (await fetchImageAsFile(source.src, source.name));
-    const maskFile = await exportMaskAsFile();
-
-    const payload = new FormData();
-    payload.append("init_image", initFile);
-    payload.append("mask_image", maskFile);
-    payload.append("positive_prompt", currentForm.positivePrompt.trim());
-    payload.append("negative_prompt", currentForm.negativePrompt.trim());
-    payload.append("width", String(Number(currentForm.width)));
-    payload.append("height", String(Number(currentForm.height)));
-    payload.append("steps", String(Number(currentForm.steps)));
-    payload.append("cfg_scale", String(Number(currentForm.cfgScale)));
-    payload.append("denoise_strength", String(Number(currentForm.denoiseStrength)));
-    payload.append("seed", currentForm.seed.trim() === "" ? "-1" : String(Number(currentForm.seed)));
-    payload.append("lora_style", currentForm.loraStyle);
-    payload.append(
-      "lora_strength",
-      String(currentForm === uploadInpaintForm ? uploadInpaintLoraStrength : inpaintLoraStrength),
-    );
-
-    return generateInpaintImage(payload);
-  }
-
-  async function fetchImageAsFile(url: string, filename: string): Promise<File> {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error("Failed to load the source image for inpainting.");
-    }
-    const blob = await response.blob();
-    return new File([blob], filename, { type: blob.type || "image/png" });
-  }
-
-  async function exportMaskAsFile(): Promise<File> {
-    const maskCanvas = maskCanvasRef.current;
-    if (!maskCanvas) {
-      throw new Error("Mask canvas is not ready.");
-    }
-
-    const blob = await new Promise<Blob | null>((resolve) => {
-      maskCanvas.toBlob(resolve, "image/png");
-    });
-    if (!blob) {
-      throw new Error("Failed to export the inpaint mask.");
-    }
-    return new File([blob], "inpaint-mask.png", { type: "image/png" });
   }
 
   async function exportCanvasAsFile(): Promise<File> {
@@ -656,6 +560,55 @@ export default function App() {
     return generateIPAdapterImage(payload);
   }
 
+  async function submitInpaintRequest(source: InpaintSourceState) {
+    const width = Number(inpaintForm.width);
+    const height = Number(inpaintForm.height);
+    const maskBlob = await exportInpaintMaskBlob(width, height);
+    const resizedImageFile = await resizeInpaintSourceFile(source, width, height);
+    return inpaintImage(resizedImageFile, maskBlob, {
+      prompt: inpaintForm.prompt.trim(),
+      negative_prompt: inpaintForm.negativePrompt.trim(),
+      control_image_file: inpaintControlSource?.file ?? null,
+      width,
+      height,
+      steps: Number(inpaintForm.steps),
+      guidance_scale: Number(inpaintForm.guidanceScale),
+      strength: Number(inpaintForm.strength),
+      seed: inpaintForm.seed.trim() === "" ? -1 : Number(inpaintForm.seed),
+    });
+  }
+
+  async function resizeInpaintSourceFile(
+    source: InpaintSourceState,
+    width: number,
+    height: number,
+    filename = "inpaint-source.png",
+  ): Promise<File> {
+    const imageBitmap = await createImageBitmap(source.file);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      imageBitmap.close();
+      throw new Error("Failed to resize the inpaint source image.");
+    }
+
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(imageBitmap, 0, 0, width, height);
+    imageBitmap.close();
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/png");
+    });
+    if (!blob) {
+      throw new Error("Failed to export resized inpaint source image.");
+    }
+
+    return new File([blob], filename, { type: "image/png" });
+  }
+
   function handleControlNetUpload(event: ChangeEvent<HTMLInputElement>) {
     setUploadedImage(event.target.files?.[0] ?? null);
   }
@@ -680,27 +633,47 @@ export default function App() {
     event.target.value = "";
   }
 
-  function handleUploadInpaintImage(event: ChangeEvent<HTMLInputElement>) {
+  function handleInpaintUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     if (!file) {
       return;
     }
 
-    void loadEditableImageFromFile(file, uploadInpaintForm).then(
+    void loadInpaintSource(file).then(
       (source) => {
-        setUploadInpaintSource(source);
-        setUploadInpaintForm((current) => ({
+        setInpaintSource(source);
+        setInpaintForm((current) => ({
           ...current,
-          width: source.width,
-          height: source.height,
+          width: DEFAULT_INPAINT_CANVAS_SIZE,
+          height: DEFAULT_INPAINT_CANVAS_SIZE,
         }));
-        setUploadInpaintResult(null);
-        setUploadInpaintError(null);
-        setShowUploadSideBySide(true);
+        setInpaintResult(null);
+        setError(null);
       },
       (loadError) => {
         const message = loadError instanceof Error ? loadError.message : "Failed to load the uploaded image.";
-        setUploadInpaintError(message);
+        setError(message);
+      },
+    );
+
+    event.target.value = "";
+  }
+
+  function handleInpaintControlUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    if (!file) {
+      return;
+    }
+
+    void loadInpaintSource(file).then(
+      (source) => {
+        setInpaintControlSource(source);
+        setInpaintResult(null);
+        setError(null);
+      },
+      (loadError) => {
+        const message = loadError instanceof Error ? loadError.message : "Failed to load the ControlNet reference image.";
+        setError(message);
       },
     );
 
@@ -753,6 +726,65 @@ export default function App() {
     });
   }
 
+  function loadInpaintSource(file: File): Promise<InpaintSourceState> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const src = reader.result;
+        if (typeof src !== "string") {
+          reject(new Error(`Failed to read ${file.name}.`));
+          return;
+        }
+
+        const image = new Image();
+        image.onload = () => {
+          resolve({
+            file,
+            src,
+            name: file.name,
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+          });
+        };
+        image.onerror = () => reject(new Error(`Failed to load ${file.name}.`));
+        image.src = src;
+      };
+      reader.onerror = () => reject(new Error(`Failed to read ${file.name}.`));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function useInpaintResultAsBase() {
+    if (!inpaintResult) {
+      return;
+    }
+
+    const file = dataUrlToFile(inpaintResult.imageUrl, "inpaint-result.png");
+    void loadInpaintSource(file).then(
+      (source) => {
+        setInpaintSource(source);
+        setInpaintResult(null);
+        setShowInpaintOriginal(false);
+      },
+      (loadError) => {
+        const message = loadError instanceof Error ? loadError.message : "Failed to load the inpaint result.";
+        setError(message);
+      },
+    );
+  }
+
+  function dataUrlToFile(dataUrl: string, filename: string) {
+    const [metadata, base64Data] = dataUrl.split(",");
+    const mimeMatch = metadata.match(/data:(.*?);base64/);
+    const mimeType = mimeMatch?.[1] ?? "image/png";
+    const binary = atob(base64Data);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return new File([bytes], filename, { type: mimeType });
+  }
+
   function loadCanvasComponent(file: File): Promise<CanvasComponent> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -803,14 +835,19 @@ export default function App() {
       loraStyle: defaultStyle?.key ?? "",
       loraStrength: defaultStyle?.default_strength ?? 1.0,
     });
-    setUploadInpaintForm(createInitialInpaintState(null, defaultStyle));
     setUploadedImage(null);
-    setUploadInpaintSource(null);
-    setUploadInpaintResult(null);
-    setUploadInpaintError(null);
-    setShowUploadSideBySide(true);
     setIpAdapterReferenceImages([]);
     setIpAdapterResult(null);
+    setInpaintSource(null);
+    setInpaintControlSource(null);
+    setInpaintForm(createInitialInpaintFormState());
+    setInpaintResult(null);
+    setInpaintPointer(null);
+    setIsInpaintMaskInverted(false);
+    setInpaintMaskOpacity(0.58);
+    setShowInpaintOriginal(false);
+    inpaintMaskBufferRef.current = null;
+    inpaintUndoStackRef.current = [];
     setCanvasComponents([]);
     setActiveComponentId(null);
   }
@@ -833,94 +870,24 @@ export default function App() {
     }));
   }
 
-  function handleInpaintStyleChange(styleKey: string) {
-    const selectedStyle = loraStyles.find((style) => style.key === styleKey);
-    if (!selectedStyle) {
+  function initializeInpaintMask() {
+    if (!inpaintSource) {
       return;
     }
 
-    setInpaintForm((current) => ({
-      ...current,
-      loraStyle: selectedStyle.key,
-      loraStrength: selectedStyle.default_strength,
-    }));
-  }
-
-  function handleUploadInpaintStyleChange(styleKey: string) {
-    const selectedStyle = loraStyles.find((style) => style.key === styleKey);
-    if (!selectedStyle) {
-      return;
-    }
-
-    setUploadInpaintForm((current) => ({
-      ...current,
-      loraStyle: selectedStyle.key,
-      loraStrength: selectedStyle.default_strength,
-    }));
-  }
-
-  function openInpaintEditor(source: EditableGeneratedImage) {
-    const defaultStyle = loraStyles.find((style) => style.key === source.loraStyle) ?? loraStyles[0];
-    setInpaintSource(source);
-    setInpaintForm(createInitialInpaintState(source, defaultStyle));
-    setInpaintResult(null);
-    setInpaintError(null);
-    setShowSideBySide(true);
-  }
-
-  async function loadEditableImageFromFile(
-    file: File,
-    defaults: Pick<
-      EditableGeneratedImage,
-      "positivePrompt" | "negativePrompt" | "steps" | "cfgScale" | "denoiseStrength" | "seed" | "loraStyle" | "loraStrength"
-    >,
-  ): Promise<EditableGeneratedImage> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const src = reader.result;
-        if (typeof src !== "string") {
-          reject(new Error(`Failed to read ${file.name}.`));
-          return;
-        }
-
-        const image = new Image();
-        image.onload = () => {
-          resolve({
-            src,
-            name: file.name,
-            width: image.width,
-            height: image.height,
-            positivePrompt: defaults.positivePrompt,
-            negativePrompt: defaults.negativePrompt,
-            steps: defaults.steps,
-            cfgScale: defaults.cfgScale,
-            denoiseStrength: defaults.denoiseStrength,
-            seed: defaults.seed,
-            loraStyle: defaults.loraStyle,
-            loraStrength: defaults.loraStrength,
-            file,
-          });
-        };
-        image.onerror = () => reject(new Error(`Failed to load ${file.name}.`));
-        image.src = src;
-      };
-      reader.onerror = () => reject(new Error(`Failed to read ${file.name}.`));
-      reader.readAsDataURL(file);
-    });
-  }
-
-  function initializeMaskCanvases() {
-    const overlayCanvas = overlayCanvasRef.current;
-    const maskCanvas = maskCanvasRef.current;
+    const overlayCanvas = inpaintOverlayCanvasRef.current;
+    const maskCanvas = inpaintMaskCanvasRef.current;
     if (!overlayCanvas || !maskCanvas) {
       return;
     }
 
-    overlayCanvas.width = Number(activeInpaintForm.width);
-    overlayCanvas.height = Number(activeInpaintForm.height);
-    maskCanvas.width = Number(activeInpaintForm.width);
-    maskCanvas.height = Number(activeInpaintForm.height);
+    const canvasWidth = Number(inpaintForm.width);
+    const canvasHeight = Number(inpaintForm.height);
+    overlayCanvas.width = canvasWidth;
+    overlayCanvas.height = canvasHeight;
+    maskCanvas.width = canvasWidth;
+    maskCanvas.height = canvasHeight;
+    inpaintMaskBufferRef.current = new Float32Array(canvasWidth * canvasHeight);
 
     const overlayContext = overlayCanvas.getContext("2d");
     const maskContext = maskCanvas.getContext("2d");
@@ -929,79 +896,586 @@ export default function App() {
     }
 
     overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-    maskContext.fillStyle = "rgb(0, 0, 0)";
+    maskContext.fillStyle = "#000000";
     maskContext.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+    inpaintUndoStackRef.current = [];
+    renderInpaintPreview();
+    renderInpaintMaskCanvas();
+    renderInpaintMaskPreview();
   }
 
-  function clearMask() {
-    initializeMaskCanvases();
-  }
-
-  function beginMaskStroke(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!overlayCanvasRef.current || !maskCanvasRef.current) {
+  function clearInpaintMask() {
+    const overlayCanvas = inpaintOverlayCanvasRef.current;
+    const maskCanvas = inpaintMaskCanvasRef.current;
+    if (!overlayCanvas || !maskCanvas) {
       return;
     }
 
-    const point = getCanvasPoint(event, overlayCanvasRef.current, activeInpaintForm.width, activeInpaintForm.height);
-    const overlayContext = overlayCanvasRef.current.getContext("2d");
-    const maskContext = maskCanvasRef.current.getContext("2d");
+    const overlayContext = overlayCanvas.getContext("2d");
+    const maskContext = maskCanvas.getContext("2d");
     if (!overlayContext || !maskContext) {
       return;
     }
 
-    setIsMaskDrawing(true);
-    overlayCanvasRef.current.setPointerCapture(event.pointerId);
-
-    overlayContext.beginPath();
-    overlayContext.moveTo(point.x, point.y);
-    overlayContext.lineWidth = activeInpaintForm.brushSize;
-    overlayContext.lineCap = "round";
-    overlayContext.lineJoin = "round";
-    overlayContext.globalCompositeOperation = activeInpaintForm.eraseMode ? "destination-out" : "source-over";
-    overlayContext.strokeStyle = "rgba(255, 0, 0, 0.5)";
-
-    maskContext.beginPath();
-    maskContext.moveTo(point.x, point.y);
-    maskContext.lineWidth = activeInpaintForm.brushSize;
-    maskContext.lineCap = "round";
-    maskContext.lineJoin = "round";
+    pushInpaintUndoState();
+    overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    inpaintMaskBufferRef.current?.fill(0);
     maskContext.globalCompositeOperation = "source-over";
-    maskContext.strokeStyle = activeInpaintForm.eraseMode ? "rgb(0, 0, 0)" : "rgb(255, 255, 255)";
-
-    drawMaskStroke(point.x, point.y);
+    maskContext.fillStyle = "#000000";
+    maskContext.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+    renderInpaintPreview();
+    renderInpaintMaskCanvas();
+    renderInpaintMaskPreview();
   }
 
-  function continueMaskStroke(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!isMaskDrawing || !overlayCanvasRef.current) {
+  function beginInpaintCanvasPointer(event: ReactPointerEvent<HTMLCanvasElement>) {
+    updateInpaintCursor(event);
+    if (inpaintTool === "brush") {
+      beginInpaintStroke(event);
       return;
     }
 
-    const point = getCanvasPoint(event, overlayCanvasRef.current, activeInpaintForm.width, activeInpaintForm.height);
-    drawMaskStroke(point.x, point.y);
+    beginInpaintSelection(event);
   }
 
-  function endMaskStroke(event: ReactPointerEvent<HTMLCanvasElement>) {
-    if (!overlayCanvasRef.current || !maskCanvasRef.current) {
+  function continueInpaintCanvasPointer(event: ReactPointerEvent<HTMLCanvasElement>) {
+    updateInpaintCursor(event);
+    if (inpaintTool === "brush") {
+      continueInpaintStroke(event);
       return;
     }
 
-    setIsMaskDrawing(false);
-    overlayCanvasRef.current.releasePointerCapture(event.pointerId);
-    overlayCanvasRef.current.getContext("2d")?.closePath();
-    maskCanvasRef.current.getContext("2d")?.closePath();
+    continueInpaintSelection(event);
   }
 
-  function drawMaskStroke(x: number, y: number) {
-    const overlayContext = overlayCanvasRef.current?.getContext("2d");
-    const maskContext = maskCanvasRef.current?.getContext("2d");
-    if (!overlayContext || !maskContext) {
+  function endInpaintCanvasPointer(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (inpaintTool === "brush") {
+      endInpaintStroke(event);
       return;
     }
 
-    overlayContext.lineTo(x, y);
-    overlayContext.stroke();
-    maskContext.lineTo(x, y);
-    maskContext.stroke();
+    endInpaintSelection(event);
+  }
+
+  function leaveInpaintCanvas(event: ReactPointerEvent<HTMLCanvasElement>) {
+    setInpaintCursor((current) => ({ ...current, visible: false }));
+    if (inpaintTool === "brush") {
+      endInpaintStroke(event);
+    }
+  }
+
+  function beginInpaintStroke(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!inpaintSource || !inpaintOverlayCanvasRef.current || !inpaintMaskCanvasRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    const erase = event.button === 2 || isInpaintEraserEnabled;
+    const point = getCanvasPoint(
+      event,
+      inpaintOverlayCanvasRef.current,
+      inpaintOverlayCanvasRef.current.width,
+      inpaintOverlayCanvasRef.current.height,
+    );
+    pushInpaintUndoState();
+    inpaintOverlayCanvasRef.current.setPointerCapture(event.pointerId);
+    setInpaintPointer({ pointerId: event.pointerId, erase, lastX: point.x, lastY: point.y, pendingDistance: 0 });
+    drawInpaintBrushStamp(point.x, point.y, erase);
+    renderInpaintPreview();
+    renderInpaintMaskCanvas();
+    renderInpaintMaskPreview();
+  }
+
+  function continueInpaintStroke(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!inpaintPointer || inpaintPointer.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    const overlayCanvas = inpaintOverlayCanvasRef.current;
+    if (!overlayCanvas) {
+      return;
+    }
+
+    const point = getCanvasPoint(event, overlayCanvas, overlayCanvas.width, overlayCanvas.height);
+    const nextPointer = drawInpaintBrushSegment(
+      inpaintPointer.lastX,
+      inpaintPointer.lastY,
+      point.x,
+      point.y,
+      inpaintPointer.erase,
+      inpaintPointer.pendingDistance,
+    );
+    renderInpaintPreview();
+    renderInpaintMaskCanvas();
+    renderInpaintMaskPreview();
+    setInpaintPointer((current) =>
+      current?.pointerId === event.pointerId
+        ? {
+            ...current,
+            ...nextPointer,
+          }
+        : current,
+    );
+  }
+
+  function endInpaintStroke(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (inpaintPointer?.pointerId === event.pointerId) {
+      if (inpaintOverlayCanvasRef.current?.hasPointerCapture(event.pointerId)) {
+        inpaintOverlayCanvasRef.current.releasePointerCapture(event.pointerId);
+      }
+      setInpaintPointer(null);
+    }
+  }
+
+  function pushInpaintUndoState() {
+    const maskBuffer = inpaintMaskBufferRef.current;
+    if (!maskBuffer) {
+      return;
+    }
+
+    inpaintUndoStackRef.current = [...inpaintUndoStackRef.current.slice(-4), new Float32Array(maskBuffer)];
+  }
+
+  function undoInpaintMask() {
+    const previousState = inpaintUndoStackRef.current.pop();
+    if (!previousState) {
+      return;
+    }
+
+    inpaintMaskBufferRef.current = new Float32Array(previousState);
+    renderInpaintPreview();
+    renderInpaintMaskCanvas();
+    renderInpaintMaskPreview();
+  }
+
+  function invertInpaintMaskMode() {
+    setIsInpaintMaskInverted((current) => !current);
+  }
+
+  function beginInpaintSelection(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!inpaintSource || !inpaintOverlayCanvasRef.current || event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const overlayCanvas = inpaintOverlayCanvasRef.current;
+    const point = getCanvasPoint(event, overlayCanvas, overlayCanvas.width, overlayCanvas.height);
+    overlayCanvas.setPointerCapture(event.pointerId);
+
+    if (inpaintTool === "lasso") {
+      const nextSelection: InpaintSelectionState = {
+        type: "lasso",
+        pointerId: event.pointerId,
+        points: [point],
+      };
+      setInpaintSelection(nextSelection);
+      drawInpaintSelectionOutline(nextSelection);
+      return;
+    }
+
+    const nextSelection: InpaintSelectionState = {
+      type: "rectangle",
+      pointerId: event.pointerId,
+      startX: point.x,
+      startY: point.y,
+      currentX: point.x,
+      currentY: point.y,
+    };
+    setInpaintSelection(nextSelection);
+    drawInpaintSelectionOutline(nextSelection);
+  }
+
+  function continueInpaintSelection(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!inpaintSelection || inpaintSelection.pointerId !== event.pointerId || !inpaintOverlayCanvasRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    const overlayCanvas = inpaintOverlayCanvasRef.current;
+    const point = getCanvasPoint(event, overlayCanvas, overlayCanvas.width, overlayCanvas.height);
+    const nextSelection: InpaintSelectionState =
+      inpaintSelection.type === "lasso"
+        ? {
+            ...inpaintSelection,
+            points: [...inpaintSelection.points, point],
+          }
+        : {
+            ...inpaintSelection,
+            currentX: point.x,
+            currentY: point.y,
+          };
+
+    setInpaintSelection(nextSelection);
+    drawInpaintSelectionOutline(nextSelection);
+  }
+
+  function endInpaintSelection(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (!inpaintSelection || inpaintSelection.pointerId !== event.pointerId) {
+      return;
+    }
+
+    event.preventDefault();
+    if (inpaintOverlayCanvasRef.current?.hasPointerCapture(event.pointerId)) {
+      inpaintOverlayCanvasRef.current.releasePointerCapture(event.pointerId);
+    }
+
+    pushInpaintUndoState();
+    applyInpaintSelection(inpaintSelection);
+    setInpaintSelection(null);
+    renderInpaintPreview();
+    renderInpaintMaskCanvas();
+    renderInpaintMaskPreview();
+  }
+
+  function drawInpaintSelectionOutline(selection: InpaintSelectionState) {
+    const overlayCanvas = inpaintOverlayCanvasRef.current;
+    if (!overlayCanvas) {
+      return;
+    }
+
+    renderInpaintPreview();
+    const context = overlayCanvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    context.save();
+    context.strokeStyle = "rgba(255,255,255,0.95)";
+    context.lineWidth = 1.5;
+    context.setLineDash([6, 4]);
+    context.shadowColor = "rgba(47,94,255,0.95)";
+    context.shadowBlur = 4;
+    context.beginPath();
+    if (selection.type === "lasso") {
+      const [firstPoint, ...restPoints] = selection.points;
+      if (!firstPoint) {
+        context.restore();
+        return;
+      }
+      context.moveTo(firstPoint.x, firstPoint.y);
+      restPoints.forEach((point) => context.lineTo(point.x, point.y));
+    } else {
+      const x = Math.min(selection.startX, selection.currentX);
+      const y = Math.min(selection.startY, selection.currentY);
+      const width = Math.abs(selection.currentX - selection.startX);
+      const height = Math.abs(selection.currentY - selection.startY);
+      context.rect(x, y, width, height);
+    }
+    context.stroke();
+    context.restore();
+  }
+
+  function applyInpaintSelection(selection: InpaintSelectionState) {
+    if (selection.type === "lasso") {
+      if (selection.points.length < 3) {
+        return;
+      }
+      fillInpaintSelectionPath((context) => {
+        const [firstPoint, ...restPoints] = selection.points;
+        context.moveTo(firstPoint.x, firstPoint.y);
+        restPoints.forEach((point) => context.lineTo(point.x, point.y));
+        context.closePath();
+      });
+      return;
+    }
+
+    const x = Math.min(selection.startX, selection.currentX);
+    const y = Math.min(selection.startY, selection.currentY);
+    const width = Math.abs(selection.currentX - selection.startX);
+    const height = Math.abs(selection.currentY - selection.startY);
+    if (width < 1 || height < 1) {
+      return;
+    }
+
+    fillInpaintSelectionPath((context) => {
+      context.rect(x, y, width, height);
+    });
+  }
+
+  function fillInpaintSelectionPath(drawPath: (context: CanvasRenderingContext2D) => void) {
+    const maskCanvas = inpaintMaskCanvasRef.current;
+    const maskBuffer = inpaintMaskBufferRef.current;
+    if (!maskCanvas || !maskBuffer) {
+      return;
+    }
+
+    const targetMaskValue = isInpaintSubtractEnabled || isInpaintMaskInverted ? 0 : 1;
+    const bufferValue = isInpaintMaskInverted ? 1 - targetMaskValue : targetMaskValue;
+    const selectionCanvas = document.createElement("canvas");
+    selectionCanvas.width = maskCanvas.width;
+    selectionCanvas.height = maskCanvas.height;
+    const selectionContext = selectionCanvas.getContext("2d");
+    if (!selectionContext) {
+      return;
+    }
+
+    selectionContext.fillStyle = targetMaskValue === 1 ? "#ffffff" : "#000000";
+    selectionContext.beginPath();
+    drawPath(selectionContext);
+    selectionContext.fill();
+
+    const selectionData = selectionContext.getImageData(0, 0, selectionCanvas.width, selectionCanvas.height).data;
+    for (let index = 0; index < maskBuffer.length; index += 1) {
+      if (selectionData[index * 4 + 3] > 0) {
+        maskBuffer[index] = bufferValue;
+      }
+    }
+  }
+
+  function updateInpaintCursor(event: ReactPointerEvent<HTMLCanvasElement>) {
+    if (inpaintTool !== "brush") {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    setInpaintCursor({
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      visible: true,
+    });
+  }
+
+  function hasInpaintMaskPainted() {
+    const maskBuffer = inpaintMaskBufferRef.current;
+    return Boolean(maskBuffer?.some((value) => value > 0.01));
+  }
+
+  function getEffectiveInpaintMask(maskBuffer: Float32Array) {
+    if (!isInpaintMaskInverted) {
+      return new Float32Array(maskBuffer);
+    }
+
+    const invertedMask = new Float32Array(maskBuffer.length);
+    for (let index = 0; index < maskBuffer.length; index += 1) {
+      invertedMask[index] = 1 - clamp(maskBuffer[index], 0, 1);
+    }
+    return invertedMask;
+  }
+
+  function drawInpaintBrushSegment(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    erase: boolean,
+    pendingDistance: number,
+  ) {
+    const distance = Math.hypot(toX - fromX, toY - fromY);
+    const spacing = Math.max(1, Number(inpaintForm.brushSize) * MASK_BRUSH_SPACING_RATIO);
+    if (distance === 0) {
+      return { lastX: fromX, lastY: fromY, pendingDistance };
+    }
+
+    const directionX = (toX - fromX) / distance;
+    const directionY = (toY - fromY) / distance;
+    let travelled = spacing - pendingDistance;
+    let lastX = fromX;
+    let lastY = fromY;
+
+    while (travelled <= distance) {
+      lastX = fromX + directionX * travelled;
+      lastY = fromY + directionY * travelled;
+      drawInpaintBrushStamp(lastX, lastY, erase);
+      travelled += spacing;
+    }
+
+    const remainingDistance = distance - (travelled - spacing);
+    return {
+      lastX: remainingDistance > 0 ? lastX : toX,
+      lastY: remainingDistance > 0 ? lastY : toY,
+      pendingDistance: remainingDistance > 0 ? remainingDistance : 0,
+    };
+  }
+
+  function drawInpaintBrushStamp(x: number, y: number, erase: boolean) {
+    const overlayCanvas = inpaintOverlayCanvasRef.current;
+    const maskCanvas = inpaintMaskCanvasRef.current;
+    const maskBuffer = inpaintMaskBufferRef.current;
+    if (!overlayCanvas || !maskCanvas || !maskBuffer) {
+      return;
+    }
+
+    const radius = Math.max(1, Number(inpaintForm.brushSize) / 2);
+    const minX = Math.max(0, Math.floor(x - radius));
+    const maxX = Math.min(maskCanvas.width - 1, Math.ceil(x + radius));
+    const minY = Math.max(0, Math.floor(y - radius));
+    const maxY = Math.min(maskCanvas.height - 1, Math.ceil(y + radius));
+
+    for (let pixelY = minY; pixelY <= maxY; pixelY += 1) {
+      for (let pixelX = minX; pixelX <= maxX; pixelX += 1) {
+        const distance = Math.hypot(pixelX + 0.5 - x, pixelY + 0.5 - y);
+        if (distance > radius) {
+          continue;
+        }
+
+        const falloff = (1 - distance / radius) ** 2;
+        const index = pixelY * maskCanvas.width + pixelX;
+        maskBuffer[index] = erase
+          ? Math.max(0, maskBuffer[index] * (1 - falloff))
+          : Math.min(1, maskBuffer[index] + falloff * (1 - maskBuffer[index]));
+      }
+    }
+  }
+
+  function renderInpaintPreview() {
+    const overlayCanvas = inpaintOverlayCanvasRef.current;
+    const maskBuffer = inpaintMaskBufferRef.current;
+    if (!overlayCanvas || !maskBuffer) {
+      return;
+    }
+
+    const context = overlayCanvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    const previewMask = blurFloatMask(maskBuffer, overlayCanvas.width, overlayCanvas.height, MASK_PREVIEW_FEATHER_PX);
+    const imageData = context.createImageData(overlayCanvas.width, overlayCanvas.height);
+    const data = imageData.data;
+    for (let index = 0; index < previewMask.length; index += 1) {
+      const alpha = Math.round(clamp(previewMask[index], 0, 1) * inpaintMaskOpacity * 255);
+      const dataIndex = index * 4;
+      data[dataIndex] = 47;
+      data[dataIndex + 1] = 94;
+      data[dataIndex + 2] = 255;
+      data[dataIndex + 3] = alpha;
+    }
+
+    context.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    context.putImageData(imageData, 0, 0);
+  }
+
+  function renderInpaintMaskCanvas() {
+    const maskCanvas = inpaintMaskCanvasRef.current;
+    const maskBuffer = inpaintMaskBufferRef.current;
+    if (!maskCanvas || !maskBuffer) {
+      return;
+    }
+
+    const context = maskCanvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    const imageData = context.createImageData(maskCanvas.width, maskCanvas.height);
+    const data = imageData.data;
+    for (let index = 0; index < maskBuffer.length; index += 1) {
+      const value = Math.round(clamp(maskBuffer[index], 0, 1) * 255);
+      const dataIndex = index * 4;
+      data[dataIndex] = value;
+      data[dataIndex + 1] = value;
+      data[dataIndex + 2] = value;
+      data[dataIndex + 3] = 255;
+    }
+
+    context.putImageData(imageData, 0, 0);
+  }
+
+  function renderInpaintMaskPreview() {
+    const previewCanvas = inpaintMaskPreviewCanvasRef.current;
+    const maskCanvas = inpaintMaskCanvasRef.current;
+    const maskBuffer = inpaintMaskBufferRef.current;
+    if (!previewCanvas || !maskCanvas || !maskBuffer) {
+      return;
+    }
+
+    previewCanvas.width = 128;
+    previewCanvas.height = Math.max(1, Math.round((maskCanvas.height / maskCanvas.width) * previewCanvas.width));
+    const context = previewCanvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+
+    const effectiveMask = getEffectiveInpaintMask(maskBuffer);
+    const featheredMask = blurFloatMask(effectiveMask, maskCanvas.width, maskCanvas.height, MASK_BRUSH_FEATHER_PX);
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = maskCanvas.width;
+    sourceCanvas.height = maskCanvas.height;
+    const sourceContext = sourceCanvas.getContext("2d");
+    if (!sourceContext) {
+      return;
+    }
+
+    const sourceImageData = sourceContext.createImageData(sourceCanvas.width, sourceCanvas.height);
+    const sourceData = sourceImageData.data;
+    for (let index = 0; index < featheredMask.length; index += 1) {
+      const value = Math.round(clamp(featheredMask[index], 0, 1) * 255);
+      const dataIndex = index * 4;
+      sourceData[dataIndex] = value;
+      sourceData[dataIndex + 1] = value;
+      sourceData[dataIndex + 2] = value;
+      sourceData[dataIndex + 3] = 255;
+    }
+    sourceContext.putImageData(sourceImageData, 0, 0);
+
+    context.imageSmoothingEnabled = true;
+    context.fillStyle = "#000000";
+    context.fillRect(0, 0, previewCanvas.width, previewCanvas.height);
+    context.drawImage(sourceCanvas, 0, 0, previewCanvas.width, previewCanvas.height);
+  }
+
+  async function exportInpaintMaskBlob(width: number, height: number): Promise<Blob> {
+    const maskCanvas = inpaintMaskCanvasRef.current;
+    const maskBuffer = inpaintMaskBufferRef.current;
+    if (!maskCanvas || !maskBuffer) {
+      throw new Error("Mask canvas is not ready.");
+    }
+
+    const effectiveMask = getEffectiveInpaintMask(maskBuffer);
+    const featheredMask = blurFloatMask(effectiveMask, maskCanvas.width, maskCanvas.height, MASK_BRUSH_FEATHER_PX);
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = maskCanvas.width;
+    sourceCanvas.height = maskCanvas.height;
+    const sourceContext = sourceCanvas.getContext("2d");
+    if (!sourceContext) {
+      throw new Error("Failed to prepare mask canvas.");
+    }
+
+    const sourceImageData = sourceContext.createImageData(sourceCanvas.width, sourceCanvas.height);
+    const sourceData = sourceImageData.data;
+    for (let index = 0; index < featheredMask.length; index += 1) {
+      const value = Math.round(clamp(featheredMask[index], 0, 1) * 255);
+      const dataIndex = index * 4;
+      sourceData[dataIndex] = value;
+      sourceData[dataIndex + 1] = value;
+      sourceData[dataIndex + 2] = value;
+      sourceData[dataIndex + 3] = 255;
+    }
+    sourceContext.putImageData(sourceImageData, 0, 0);
+
+    const exportCanvas = document.createElement("canvas");
+    exportCanvas.width = width;
+    exportCanvas.height = height;
+    const context = exportCanvas.getContext("2d");
+    if (!context) {
+      throw new Error("Failed to prepare mask export.");
+    }
+
+    context.imageSmoothingEnabled = false;
+    context.fillStyle = "#000000";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(sourceCanvas, 0, 0, width, height);
+
+    const imageData = context.getImageData(0, 0, width, height);
+    const data = imageData.data;
+    for (let index = 0; index < data.length; index += 4) {
+      const value = data[index];
+      data[index] = value;
+      data[index + 1] = value;
+      data[index + 2] = value;
+      data[index + 3] = 255;
+    }
+    context.putImageData(imageData, 0, 0);
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      exportCanvas.toBlob(resolve, "image/png");
+    });
+    if (!blob) {
+      throw new Error("Failed to export inpaint mask.");
+    }
+
+    return blob;
   }
 
   function bringComponentToFront(id: string) {
@@ -1211,7 +1685,7 @@ export default function App() {
   }
 
   const isControlGuidedMode = mode === "controlnet" || mode === "canvas";
-  const isUploadInpaintMode = mode === "upload-inpaint";
+  const isInpaintMode = mode === "upload-inpaint";
   const isIPAdapterMode = mode === "ip-adapter";
   const selectedCanvasComponent = canvasComponents.find((component) => component.id === activeComponentId) ?? null;
   const canvasToolbarWidth = 360;
@@ -1237,8 +1711,8 @@ export default function App() {
     : 100;
   const isGenerateDisabled =
     loading ||
-    loraStyles.length === 0 ||
-    (isUploadInpaintMode && !uploadInpaintSource) ||
+    (!isInpaintMode && loraStyles.length === 0) ||
+    (isInpaintMode && !inpaintSource) ||
     (isIPAdapterMode && ipAdapterReferenceImages.length === 0);
   return (
     <main className="min-h-screen px-4 py-8 text-slate-100 sm:px-6 lg:px-10">
@@ -1254,14 +1728,14 @@ export default function App() {
               </h1>
               <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base">
                 Stable Diffusion v1.5 scaffolded for local, offline-first image generation with
-                prompt controls, ControlNet guidance, freeform canvas composition, direct upload inpainting, IP-Adapter references, and post-generation edits.
+                prompt controls, ControlNet guidance, freeform canvas composition, upload inpainting, and IP-Adapter references.
               </p>
             </div>
 
             <div className="grid gap-3 sm:grid-cols-3">
               <MetricCard label="Scheduler" value="DPM++ 2M" detail="Karras sigmas" accent="orange" />
               <MetricCard label="Device" value="CPU" detail="GPU disabled" accent="green" />
-              <MetricCard label="Modes" value="5" detail="Normal, Lineart, Canvas, Upload, IP-Adapter" accent="slate" />
+              <MetricCard label="Modes" value="5" detail="Normal, Lineart, Canvas, Inpaint, IP-Adapter" accent="slate" />
             </div>
           </div>
         </header>
@@ -1357,68 +1831,116 @@ export default function App() {
                 </FieldShell>
               ) : null}
 
-              {isUploadInpaintMode ? (
-                <FieldShell
-                  label="Upload Image"
-                  helper="Accepts PNG, JPG, or WEBP. Generation stays disabled until an image is loaded."
-                >
-                  <div className="space-y-4 rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
-                    <label className="flex cursor-pointer items-center justify-between rounded-[20px] border border-dashed border-white/15 bg-white/[0.03] px-4 py-4 transition hover:border-orange-400/35 hover:bg-white/[0.06]">
-                      <div>
-                        <div className="font-display text-lg font-semibold text-white">Upload Image</div>
-                        <div className="mt-1 text-sm text-slate-400">PNG, JPG, or WEBP</div>
-                      </div>
-                      <div className="rounded-full bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950">Choose</div>
-                      <input
-                        type="file"
-                        accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-                        className="hidden"
-                        onChange={handleUploadInpaintImage}
-                      />
-                    </label>
-
-                    {uploadInpaintSource ? (
-                      <div className="flex items-center gap-4 rounded-[20px] border border-white/10 bg-white/5 p-3">
-                        <img
-                          src={uploadInpaintSource.src}
-                          alt={uploadInpaintSource.name}
-                          className="h-16 w-16 rounded-xl border border-white/10 object-cover"
+              {isInpaintMode ? (
+                <>
+                  <FieldShell
+                    label="Upload Base Image"
+                    helper="Upload the image to edit, then paint the mask in the preview."
+                  >
+                    <div className="space-y-4 rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+                      <label className="flex cursor-pointer items-center justify-between rounded-[20px] border border-dashed border-white/15 bg-white/[0.03] px-4 py-4 transition hover:border-orange-400/35 hover:bg-white/[0.06]">
+                        <div>
+                          <div className="font-display text-lg font-semibold text-white">Upload Image</div>
+                          <div className="mt-1 text-sm text-slate-400">PNG, JPG, or WEBP</div>
+                        </div>
+                        <div className="rounded-full bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950">Choose</div>
+                        <input
+                          type="file"
+                          accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={handleInpaintUpload}
                         />
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold text-white">{uploadInpaintSource.name}</div>
-                          <div className="mt-1 text-xs text-slate-400">
-                            {uploadInpaintSource.width} x {uploadInpaintSource.height}px
+                      </label>
+
+                      {inpaintSource ? (
+                        <div className="flex items-center gap-4 rounded-[20px] border border-white/10 bg-white/5 p-3">
+                          <img
+                            src={inpaintSource.src}
+                            alt={inpaintSource.name}
+                            className="h-16 w-16 rounded-xl border border-white/10 object-cover"
+                          />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold text-white">{inpaintSource.name}</div>
+                            <div className="mt-1 text-xs text-slate-400">
+                              {inpaintSource.width} x {inpaintSource.height}px
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </FieldShell>
+                      ) : null}
+                    </div>
+                  </FieldShell>
+
+                  <FieldShell
+                    label="ControlNet Reference"
+                    helper="Optional. If empty, ControlNet uses the base image."
+                  >
+                    <div className="space-y-4 rounded-[24px] border border-white/10 bg-white/[0.04] p-4">
+                      <label className="flex cursor-pointer items-center justify-between rounded-[20px] border border-dashed border-white/15 bg-white/[0.03] px-4 py-4 transition hover:border-orange-400/35 hover:bg-white/[0.06]">
+                        <div>
+                          <div className="font-display text-lg font-semibold text-white">Upload Control Reference</div>
+                          <div className="mt-1 text-sm text-slate-400">Lineart guide source for inpaint ControlNet</div>
+                        </div>
+                        <div className="rounded-full bg-orange-500 px-4 py-2 text-sm font-semibold text-slate-950">Choose</div>
+                        <input
+                          type="file"
+                          accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                          className="hidden"
+                          onChange={handleInpaintControlUpload}
+                        />
+                      </label>
+
+                      {inpaintControlSource ? (
+                        <div className="flex items-center justify-between gap-3 rounded-[20px] border border-white/10 bg-white/5 p-3">
+                          <div className="flex min-w-0 items-center gap-4">
+                            <img
+                              src={inpaintControlSource.src}
+                              alt={inpaintControlSource.name}
+                              className="h-16 w-16 rounded-xl border border-white/10 object-cover"
+                            />
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-semibold text-white">{inpaintControlSource.name}</div>
+                              <div className="mt-1 text-xs text-slate-400">
+                                {inpaintControlSource.width} x {inpaintControlSource.height}px
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setInpaintControlSource(null)}
+                            className="rounded-full border border-white/10 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-red-400/30 hover:bg-white/5 hover:text-white"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </FieldShell>
+                </>
               ) : null}
 
               <FieldShell
                 label="Positive Prompt"
                 helper={
-                  isUploadInpaintMode
-                    ? "Describe the edit you want inside the masked region."
+                  isInpaintMode
+                    ? "Describe what should appear in the white masked area."
                     : isIPAdapterMode
                       ? "Describe the scene, style, and composition. Do not describe the character — IP-Adapter handles that from your reference images."
-                    : "Describe the subject, style, composition, lighting, and desired details."
+                      : "Describe the subject, style, composition, lighting, and desired details."
                 }
               >
                 <textarea
-                  value={isUploadInpaintMode ? uploadInpaintForm.positivePrompt : form.positivePrompt}
+                  value={isInpaintMode ? inpaintForm.prompt : form.positivePrompt}
                   onChange={(event) =>
-                    isUploadInpaintMode
-                      ? updateUploadInpaintField("positivePrompt", event.target.value)
+                    isInpaintMode
+                      ? updateInpaintField("prompt", event.target.value)
                       : updateField("positivePrompt", event.target.value)
                   }
                   placeholder={
-                    isUploadInpaintMode
-                      ? "Replace the masked area with a detailed comic-style skyline..."
+                    isInpaintMode
+                      ? "Add a clean comic-style gold crown, matching lighting and ink detail..."
                       : isIPAdapterMode
                         ? "Describe the scene, style, and composition. Do not describe the character — IP-Adapter handles that from your reference images."
-                      : "A cinematic comic-book hero portrait, dramatic rim light, richly inked detail..."
+                        : "A cinematic comic-book hero portrait, dramatic rim light, richly inked detail..."
                   }
                   rows={5}
                   required
@@ -1428,17 +1950,13 @@ export default function App() {
 
               <FieldShell
                 label="Negative Prompt"
-                helper={
-                  isUploadInpaintMode
-                    ? "Optional constraints for the regenerated region."
-                    : "Suppress unwanted artifacts, styles, or visual defects."
-                }
+                helper="Suppress unwanted artifacts, styles, or visual defects."
               >
                 <textarea
-                  value={isUploadInpaintMode ? uploadInpaintForm.negativePrompt : form.negativePrompt}
+                  value={isInpaintMode ? inpaintForm.negativePrompt : form.negativePrompt}
                   onChange={(event) =>
-                    isUploadInpaintMode
-                      ? updateUploadInpaintField("negativePrompt", event.target.value)
+                    isInpaintMode
+                      ? updateInpaintField("negativePrompt", event.target.value)
                       : updateField("negativePrompt", event.target.value)
                   }
                   placeholder="blurry, low quality, distorted face, extra fingers..."
@@ -1447,80 +1965,74 @@ export default function App() {
                 />
               </FieldShell>
 
-              <div className="flex items-center justify-between rounded-[20px] border border-white/10 bg-white/[0.04] px-4 py-3">
-                <div>
-                  <div className="text-sm font-semibold text-white">Art Style (LoRA)</div>
-                  <div className="mt-1 text-xs text-slate-400">
-                    {isLoraEnabled ? "LoRA will be applied during generation." : "LoRA is disabled for generation."}
+              {!isInpaintMode ? (
+                <>
+                  <div className="flex items-center justify-between rounded-[20px] border border-white/10 bg-white/[0.04] px-4 py-3">
+                    <div>
+                      <div className="text-sm font-semibold text-white">Art Style (LoRA)</div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        {isLoraEnabled ? "LoRA will be applied during generation." : "LoRA is disabled for generation."}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={isLoraEnabled}
+                      onClick={() => setIsLoraEnabled((current) => !current)}
+                      className={`relative h-8 w-14 rounded-full border transition ${
+                        isLoraEnabled
+                          ? "border-orange-300/50 bg-orange-500"
+                          : "border-white/10 bg-white/10"
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition ${
+                          isLoraEnabled ? "left-7" : "left-1"
+                        }`}
+                      />
+                    </button>
                   </div>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={isLoraEnabled}
-                  onClick={() => setIsLoraEnabled((current) => !current)}
-                  className={`relative h-8 w-14 rounded-full border transition ${
-                    isLoraEnabled
-                      ? "border-orange-300/50 bg-orange-500"
-                      : "border-white/10 bg-white/10"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition ${
-                      isLoraEnabled ? "left-7" : "left-1"
-                    }`}
-                  />
-                </button>
-              </div>
 
-              <div className={`space-y-5 transition-opacity ${loraControlOpacity}`}>
-                <FieldShell
-                  label="Art Style"
-                  helper={
-                    loraStyles.length > 0
-                      ? "Required. Styles are loaded dynamically from the backend."
-                      : "Loading styles from the backend."
-                  }
-                >
-                  <select
-                    value={isUploadInpaintMode ? uploadInpaintForm.loraStyle : form.loraStyle}
-                    onChange={(event) =>
-                      isUploadInpaintMode
-                        ? handleUploadInpaintStyleChange(event.target.value)
-                        : handleLoraStyleChange(event.target.value)
-                    }
-                    disabled={loraStyles.length === 0}
-                    className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition focus:border-orange-400/50 focus:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {loraStyles.map((style) => (
-                      <option key={style.key} value={style.key} className="bg-slate-900 text-white">
-                        {style.label}
-                      </option>
-                    ))}
-                  </select>
-                </FieldShell>
+                  <div className={`space-y-5 transition-opacity ${loraControlOpacity}`}>
+                    <FieldShell
+                      label="Art Style"
+                      helper={
+                        loraStyles.length > 0
+                          ? "Required. Styles are loaded dynamically from the backend."
+                          : "Loading styles from the backend."
+                      }
+                    >
+                      <select
+                        value={form.loraStyle}
+                        onChange={(event) => handleLoraStyleChange(event.target.value)}
+                        disabled={loraStyles.length === 0}
+                        className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition focus:border-orange-400/50 focus:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {loraStyles.map((style) => (
+                          <option key={style.key} value={style.key} className="bg-slate-900 text-white">
+                            {style.label}
+                          </option>
+                        ))}
+                      </select>
+                    </FieldShell>
 
-                <FieldShell
-                  label="Style Strength"
-                  helper={`${
-                    (isUploadInpaintMode ? uploadInpaintForm.loraStrength : form.loraStrength).toFixed(2)
-                  } between 0.1 and 2.0`}
-                >
-                  <input
-                    type="range"
-                    min={0.1}
-                    max={2.0}
-                    step={0.05}
-                    value={isUploadInpaintMode ? uploadInpaintForm.loraStrength : form.loraStrength}
-                    onChange={(event) =>
-                      isUploadInpaintMode
-                        ? updateUploadInpaintField("loraStrength", Number(event.target.value))
-                        : updateField("loraStrength", Number(event.target.value))
-                    }
-                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
-                  />
-                </FieldShell>
-              </div>
+                    <FieldShell
+                      label="Style Strength"
+                      helper={`${form.loraStrength.toFixed(2)} between 0.1 and 2.0`}
+                    >
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={2.0}
+                        step={0.05}
+                        value={form.loraStrength}
+                        onChange={(event) => updateField("loraStrength", Number(event.target.value))}
+                        className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
+                      />
+                    </FieldShell>
+                  </div>
+                </>
+              ) : null}
 
               {mode === "controlnet" ? (
                 <FieldShell
@@ -1594,126 +2106,57 @@ export default function App() {
                 </FieldShell>
               ) : null}
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <NumberField
-                  label={isUploadInpaintMode ? "Width (optional)" : "Width"}
-                  helper={isUploadInpaintMode ? "Prefilled from the uploaded image" : "Default 512"}
-                  min={64}
-                  max={isUploadInpaintMode ? 4096 : 1024}
-                  step={8}
-                  value={isUploadInpaintMode ? uploadInpaintForm.width : form.width}
-                  onChange={(value) =>
-                    isUploadInpaintMode ? updateUploadInpaintField("width", value) : updateField("width", value)
-                  }
-                />
-                <NumberField
-                  label={isUploadInpaintMode ? "Height (optional)" : "Height"}
-                  helper={isUploadInpaintMode ? "Prefilled from the uploaded image" : "Default 512"}
-                  min={64}
-                  max={isUploadInpaintMode ? 4096 : 1024}
-                  step={8}
-                  value={isUploadInpaintMode ? uploadInpaintForm.height : form.height}
-                  onChange={(value) =>
-                    isUploadInpaintMode ? updateUploadInpaintField("height", value) : updateField("height", value)
-                  }
-                />
-                <NumberField
-                  label="Steps"
-                  helper="Default 20"
-                  min={1}
-                  max={100}
-                  step={1}
-                  value={isUploadInpaintMode ? uploadInpaintForm.steps : form.steps}
-                  onChange={(value) =>
-                    isUploadInpaintMode ? updateUploadInpaintField("steps", value) : updateField("steps", value)
-                  }
-                />
-                <NumberField
-                  label="CFG Scale"
-                  helper="Default 7.5"
-                  min={1}
-                  max={30}
-                  step={0.5}
-                  value={isUploadInpaintMode ? uploadInpaintForm.cfgScale : form.cfgScale}
-                  onChange={(value) =>
-                    isUploadInpaintMode ? updateUploadInpaintField("cfgScale", value) : updateField("cfgScale", value)
-                  }
-                />
-                <NumberField
-                  label="Denoise Strength"
-                  helper="0.0 keeps more source structure, 1.0 changes more"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={isUploadInpaintMode ? uploadInpaintForm.denoiseStrength : form.denoiseStrength}
-                  onChange={(value) =>
-                    isUploadInpaintMode
-                      ? updateUploadInpaintField("denoiseStrength", value)
-                      : updateField("denoiseStrength", value)
-                  }
-                />
-              </div>
-
-              <FieldShell
-                label="Seed"
-                helper={
-                  isUploadInpaintMode
-                    ? "Defaults to -1 for random. Positive and negative values are accepted."
-                    : "Leave blank for random. Positive and negative values are accepted."
-                }
-              >
-                <input
-                  value={isUploadInpaintMode ? uploadInpaintForm.seed : form.seed}
-                  onChange={(event) =>
-                    isUploadInpaintMode
-                      ? updateUploadInpaintField("seed", event.target.value)
-                      : updateField("seed", event.target.value)
-                  }
-                  placeholder="Random"
-                  inputMode="numeric"
-                  className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-orange-400/50 focus:bg-white/[0.07]"
-                />
-              </FieldShell>
-
-              {isUploadInpaintMode ? (
+              {isInpaintMode ? (
                 <>
-                  <FieldShell
-                    label="Brush Size"
-                    helper={`${uploadInpaintForm.brushSize}px between 5 and 80`}
-                  >
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <NumberField label="Width" helper="Output width" min={64} max={2048} step={8} value={inpaintForm.width} onChange={(value) => updateInpaintField("width", value)} />
+                    <NumberField label="Height" helper="Output height" min={64} max={2048} step={8} value={inpaintForm.height} onChange={(value) => updateInpaintField("height", value)} />
+                    <NumberField label="Steps" helper="Default 30" min={1} max={100} step={1} value={inpaintForm.steps} onChange={(value) => updateInpaintField("steps", value)} />
+                    <NumberField label="Guidance Scale" helper="Default 7.5" min={1} max={30} step={0.5} value={inpaintForm.guidanceScale} onChange={(value) => updateInpaintField("guidanceScale", value)} />
+                    <NumberField label="Denoise Strength" helper="0.25-0.35 preserves structure for color edits" min={0.05} max={1} step={0.05} value={inpaintForm.strength} onChange={(value) => updateInpaintField("strength", value)} />
+                  </div>
+                  <FieldShell label="Brush Size" helper={`${inpaintForm.brushSize}px`}>
                     <input
                       type="range"
-                      min={5}
-                      max={80}
+                      min={4}
+                      max={160}
                       step={1}
-                      value={uploadInpaintForm.brushSize}
-                      onChange={(event) => updateUploadInpaintField("brushSize", Number(event.target.value))}
+                      value={inpaintForm.brushSize}
+                      onChange={(event) => updateInpaintField("brushSize", Number(event.target.value))}
                       className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
                     />
                   </FieldShell>
-
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={() => updateUploadInpaintField("eraseMode", !uploadInpaintForm.eraseMode)}
-                      className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-                        uploadInpaintForm.eraseMode
-                          ? "bg-white text-slate-950"
-                          : "border border-white/10 bg-white/5 text-slate-200 hover:border-orange-400/30 hover:bg-white/10"
-                      }`}
-                    >
-                      {uploadInpaintForm.eraseMode ? "Erase Mode" : "Draw Mode"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={clearMask}
-                      className="rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-red-400/30 hover:bg-white/5"
-                    >
-                      Clear Mask
-                    </button>
-                  </div>
+                  <FieldShell label="Seed" helper="-1 or blank for random.">
+                    <input
+                      value={inpaintForm.seed}
+                      onChange={(event) => updateInpaintField("seed", event.target.value)}
+                      placeholder="-1"
+                      inputMode="numeric"
+                      className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-orange-400/50 focus:bg-white/[0.07]"
+                    />
+                  </FieldShell>
                 </>
-              ) : null}
+              ) : (
+                <>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <NumberField label="Width" helper="Default 512" min={64} max={1024} step={8} value={form.width} onChange={(value) => updateField("width", value)} />
+                    <NumberField label="Height" helper="Default 512" min={64} max={1024} step={8} value={form.height} onChange={(value) => updateField("height", value)} />
+                    <NumberField label="Steps" helper="Default 20" min={1} max={100} step={1} value={form.steps} onChange={(value) => updateField("steps", value)} />
+                    <NumberField label="CFG Scale" helper="Default 7.5" min={1} max={30} step={0.5} value={form.cfgScale} onChange={(value) => updateField("cfgScale", value)} />
+                    <NumberField label="Denoise Strength" helper="Use 0.7-0.85 for adding new features like beards" min={0} max={1} step={0.05} value={form.denoiseStrength} onChange={(value) => updateField("denoiseStrength", value)} />
+                  </div>
+                  <FieldShell label="Seed" helper="Leave blank for random. Positive and negative values are accepted.">
+                    <input
+                      value={form.seed}
+                      onChange={(event) => updateField("seed", event.target.value)}
+                      placeholder="Random"
+                      inputMode="numeric"
+                      className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-orange-400/50 focus:bg-white/[0.07]"
+                    />
+                  </FieldShell>
+                </>
+              )}
+
             </div>
 
             {error ? (
@@ -1722,19 +2165,13 @@ export default function App() {
               </div>
             ) : null}
 
-            {isUploadInpaintMode && uploadInpaintError ? (
-              <div className="mt-5 rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                {uploadInpaintError}
-              </div>
-            ) : null}
-
             <div className="mt-6 flex flex-col gap-3 border-t border-white/10 pt-5 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-slate-400">
-                {isUploadInpaintMode
-                  ? "CPU-only generation. Upload mode reuses the existing inpaint endpoint with the uploaded image and exported mask."
+                {isInpaintMode
+                  ? "CPU-only inpainting. White mask pixels are regenerated and black pixels are preserved."
                   : isIPAdapterMode
                     ? "CPU-only generation. IP-Adapter mode sends all reference images as multipart form data to the local IP-Adapter endpoint."
-                  : "CPU-only generation. Control-guided modes reuse the existing ControlNet endpoint and export a flat input image when needed."}
+                    : "CPU-only generation. Control-guided modes reuse the existing ControlNet endpoint and export a flat input image when needed."}
               </p>
               <button
                 type="submit"
@@ -1749,6 +2186,8 @@ export default function App() {
                       ? "Generate from Canvas"
                       : mode === "ip-adapter"
                         ? "Generate with IP-Adapter"
+                      : mode === "upload-inpaint"
+                        ? "Run Inpaint"
                       : mode === "controlnet"
                         ? "Generate with ControlNet"
                         : "Generate"}
@@ -1765,9 +2204,9 @@ export default function App() {
                       ? "Canvas Compose"
                       : mode === "upload-inpaint"
                         ? "Upload & Inpaint"
-                        : mode === "ip-adapter"
-                          ? "IP-Adapter Output"
-                          : "Current Preview"}
+                      : mode === "ip-adapter"
+                        ? "IP-Adapter Output"
+                        : "Current Preview"}
                   </h2>
                   <p className="mt-1 text-sm text-slate-400">
                     {mode === "normal"
@@ -1776,9 +2215,9 @@ export default function App() {
                         ? "Lineart preview and generated output for the latest ControlNet request."
                         : mode === "canvas"
                           ? "Arrange uploaded components, then export the canvas through the existing ControlNet pipeline."
-                          : mode === "ip-adapter"
-                            ? "Upload reference images and generate to see output here."
-                          : "Upload an image, paint a white mask over areas to regenerate, and submit through the existing inpaint pipeline."}
+                          : mode === "upload-inpaint"
+                            ? "Paint the mask over areas to regenerate, then run the local inpaint pipeline."
+                            : "Upload reference images and generate to see output here."}
                   </p>
                 </div>
                 <button
@@ -1810,78 +2249,197 @@ export default function App() {
               ) : mode === "upload-inpaint" ? (
                 <div className="space-y-4">
                   <div className="overflow-auto rounded-[24px] border border-white/10 bg-[linear-gradient(135deg,rgba(15,23,42,0.92),rgba(30,41,59,0.9))] p-3">
-                    {uploadInpaintSource ? (
+                    {inpaintSource ? (
                       <div
-                        className="relative mx-auto overflow-hidden rounded-[20px] border border-white/10 shadow-inner"
+                        className="relative mx-auto overflow-hidden rounded-[20px] border border-white/10 bg-white shadow-inner"
                         style={{
-                          width: `${uploadInpaintForm.width}px`,
-                          height: `${uploadInpaintForm.height}px`,
+                          width: `${inpaintForm.width}px`,
+                          height: `${inpaintForm.height}px`,
                         }}
                       >
                         <img
-                          src={uploadInpaintSource.src}
-                          alt={uploadInpaintSource.name}
-                          className="absolute inset-0 h-full w-full object-fill"
+                          src={inpaintSource.src}
+                          alt={inpaintSource.name}
+                          className="absolute inset-0 h-full w-full select-none object-fill"
+                          draggable={false}
                         />
                         <canvas
-                          ref={overlayCanvasRef}
-                          width={uploadInpaintForm.width}
-                          height={uploadInpaintForm.height}
-                          onPointerDown={beginMaskStroke}
-                          onPointerMove={continueMaskStroke}
-                          onPointerUp={endMaskStroke}
-                          onPointerLeave={endMaskStroke}
-                          className="absolute inset-0 h-full w-full touch-none cursor-crosshair"
+                          ref={inpaintOverlayCanvasRef}
+                          width={inpaintForm.width}
+                          height={inpaintForm.height}
+                          onContextMenu={(event) => event.preventDefault()}
+                          onPointerDown={beginInpaintCanvasPointer}
+                          onPointerMove={continueInpaintCanvasPointer}
+                          onPointerUp={endInpaintCanvasPointer}
+                          onPointerCancel={endInpaintCanvasPointer}
+                          onPointerEnter={updateInpaintCursor}
+                          onPointerLeave={leaveInpaintCanvas}
+                          className={`absolute inset-0 h-full w-full touch-none ${inpaintTool === "brush" ? "cursor-none" : "cursor-crosshair"}`}
                         />
+                        {inpaintTool === "brush" && inpaintCursor.visible ? (
+                          <div
+                            className="pointer-events-none absolute rounded-full border border-white/90 shadow-[0_0_0_1px_rgba(47,94,255,0.8),0_0_10px_rgba(47,94,255,0.7)]"
+                            style={{
+                              width: `${inpaintForm.brushSize}px`,
+                              height: `${inpaintForm.brushSize}px`,
+                              left: `${inpaintCursor.x}px`,
+                              top: `${inpaintCursor.y}px`,
+                              transform: "translate(-50%, -50%)",
+                            }}
+                          />
+                        ) : null}
                         <canvas
-                          ref={maskCanvasRef}
-                          width={uploadInpaintForm.width}
-                          height={uploadInpaintForm.height}
+                          ref={inpaintMaskCanvasRef}
+                          width={inpaintForm.width}
+                          height={inpaintForm.height}
                           className="hidden"
                         />
                       </div>
                     ) : (
                       <div className="flex min-h-[360px] items-center justify-center rounded-[20px] border-2 border-dashed border-white/15 px-8 text-center text-sm text-slate-400">
-                        Upload an image to begin
+                        Upload a base image to begin masking.
                       </div>
                     )}
                   </div>
 
-                  {uploadInpaintSource ? (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-[20px] border border-white/10 bg-white/[0.04] p-3">
+                    <div className="flex flex-wrap gap-2">
+                      {(["brush", "lasso", "rectangle"] as InpaintMaskTool[]).map((tool) => (
+                        <button
+                          key={tool}
+                          type="button"
+                          onClick={() => setInpaintTool(tool)}
+                          disabled={!inpaintSource}
+                          className={`rounded-full border px-4 py-2 text-sm font-medium capitalize transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                            inpaintTool === tool
+                              ? "border-orange-400/50 bg-orange-500 text-slate-950"
+                              : "border-white/10 text-slate-300 hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
+                          }`}
+                        >
+                          {tool === "brush" ? "Brush" : tool === "lasso" ? "Lasso" : "Rectangle"}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsInpaintSubtractEnabled((current) => !current)}
+                      disabled={!inpaintSource || inpaintTool === "brush"}
+                      className={`rounded-full border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                        isInpaintSubtractEnabled
+                          ? "border-red-400/50 bg-red-500 text-white"
+                          : "border-white/10 text-slate-300 hover:border-red-400/30 hover:bg-white/5 hover:text-white"
+                      }`}
+                    >
+                      Subtract
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3">
                     <div className="text-sm text-slate-400">
-                      Canvas matches the current width and height settings: {uploadInpaintForm.width} x {uploadInpaintForm.height}
+                      {inpaintSource
+                        ? `Mask canvas: ${inpaintForm.width} x ${inpaintForm.height}px`
+                        : "Left-drag paints mask. Use Eraser or right-drag to erase mask."}
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsInpaintEraserEnabled((current) => !current)}
+                        disabled={!inpaintSource}
+                        className={`rounded-full border px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                          isInpaintEraserEnabled
+                            ? "border-orange-400/50 bg-orange-500 text-slate-950"
+                            : "border-white/10 text-slate-300 hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
+                        }`}
+                      >
+                        Eraser
+                      </button>
+                      <button
+                        type="button"
+                        onClick={undoInpaintMask}
+                        disabled={!inpaintSource}
+                        className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Undo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={invertInpaintMaskMode}
+                        disabled={!inpaintSource}
+                        className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isInpaintMaskInverted ? "Paint Change" : "Paint Keep"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={clearInpaintMask}
+                        disabled={!inpaintSource}
+                        className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-red-400/30 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Clear Mask
+                      </button>
+                    </div>
+                  </div>
+
+                  {inpaintSource ? (
+                    <div className="grid gap-4 rounded-[20px] border border-white/10 bg-white/[0.04] p-4 sm:grid-cols-[1fr_auto]">
+                      <FieldShell label="Mask Opacity" helper={`${inpaintMaskOpacity.toFixed(2)} between 0.3 and 1.0`}>
+                        <input
+                          type="range"
+                          min={0.3}
+                          max={1}
+                          step={0.05}
+                          value={inpaintMaskOpacity}
+                          onChange={(event) => setInpaintMaskOpacity(Number(event.target.value))}
+                          className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
+                        />
+                      </FieldShell>
+                      <div className="space-y-2">
+                        <div className="text-xs font-semibold text-slate-400">Exported Mask</div>
+                        <canvas
+                          ref={inpaintMaskPreviewCanvasRef}
+                          className="h-20 rounded-lg border border-white/10 bg-black object-contain"
+                        />
+                      </div>
                     </div>
                   ) : null}
 
-                  {uploadInpaintResult ? (
+                  {inpaintResult ? (
                     <div className="space-y-4">
-                      <div className="flex items-center justify-between">
-                        <h3 className="font-display text-xl font-semibold text-white">Inpaint Result</h3>
-                        <button
-                          type="button"
-                          onClick={() => setShowUploadSideBySide((current) => !current)}
-                          className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
-                        >
-                          {showUploadSideBySide ? "Show Result Only" : "Show Side by Side"}
-                        </button>
-                      </div>
-
-                      {showUploadSideBySide ? (
-                        <div className="grid gap-4 md:grid-cols-2">
-                          <PreviewPanel title="Original" src={uploadInpaintResult.original.src} alt="Original uploaded image" />
-                          <PreviewPanel title="Inpainted Result" src={uploadInpaintResult.response.image_url} alt="Inpainted result" />
+                      <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[rgba(255,255,255,0.03)]">
+                        <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+                          <div className="text-sm font-semibold text-slate-200">Inpaint Result</div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setShowInpaintOriginal((current) => !current)}
+                              className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
+                            >
+                              {showInpaintOriginal ? "Show Result" : "Compare"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={useInpaintResultAsBase}
+                              className="rounded-full border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
+                            >
+                              Use as Base
+                            </button>
+                          </div>
                         </div>
-                      ) : (
-                        <PreviewPanel title="Inpainted Result" src={uploadInpaintResult.response.image_url} alt="Inpainted result" />
-                      )}
-
+                        <img
+                          src={showInpaintOriginal && inpaintSource ? inpaintSource.src : inpaintResult.imageUrl}
+                          alt="Inpainted result"
+                          className="max-h-[640px] w-full bg-white object-contain"
+                        />
+                      </div>
                       <div className="grid gap-3 sm:grid-cols-2">
-                        <InfoChip label="Seed" value={String(uploadInpaintResult.response.seed_used)} />
-                        <InfoChip label="Generation Time" value={`${uploadInpaintResult.response.generation_time_seconds}s`} />
-                        <InfoChip label="CPU Usage" value={`${uploadInpaintResult.response.cpu_usage}%`} />
+                        <InfoChip label="Seed" value={String(inpaintResult.response.seed_used)} />
+                        <InfoChip label="Steps" value={String(inpaintResult.response.steps_used)} />
+                        <InfoChip label="Scheduler Steps" value={String(inpaintResult.response.pipeline_steps)} />
+                        <InfoChip label="Generation Time" value={`${inpaintResult.response.generation_time_seconds}s`} />
+                        <InfoChip label="CPU Usage" value={`${inpaintResult.response.cpu_usage}%`} />
                         <InfoChip
                           label="RAM Usage"
-                          value={`${Number(((uploadInpaintResult.response.ram_used / uploadInpaintResult.response.ram_total) * 100).toFixed(1))}%`}
+                          value={`${Number(((inpaintResult.response.ram_used / inpaintResult.response.ram_total) * 100).toFixed(1))}%`}
                         />
                       </div>
                     </div>
@@ -2036,23 +2594,19 @@ export default function App() {
                   </div>
 
                   {controlNetResult ? (
-                    <>
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <PreviewPanel title="Lineart Preview" src={controlNetResult.response.lineart_preview_url} alt="Preprocessed lineart preview" />
-                        <PreviewPanel title="Generated Output" src={controlNetResult.response.image_url} alt="Canvas Compose generated output" />
-                      </div>
-                      <ActionButton label="Edit this image" onClick={() => openInpaintEditor(controlNetResult.editable)} />
-                    </>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <PreviewPanel title="Lineart Preview" src={controlNetResult.response.lineart_preview_url} alt="Preprocessed lineart preview" />
+                      <PreviewPanel title="Generated Output" src={controlNetResult.response.image_url} alt="Canvas Compose generated output" />
+                    </div>
                   ) : null}
                 </div>
               ) : isControlGuidedMode ? (
                 controlNetResult ? (
                   <div className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <PreviewPanel title="Lineart Preview" src={controlNetResult.response.lineart_preview_url} alt="Preprocessed lineart preview" />
-                      <PreviewPanel title="Generated Output" src={controlNetResult.response.image_url} alt="ControlNet generated output" />
-                    </div>
-                    <ActionButton label="Edit this image" onClick={() => openInpaintEditor(controlNetResult.editable)} />
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <PreviewPanel title="Lineart Preview" src={controlNetResult.response.lineart_preview_url} alt="Preprocessed lineart preview" />
+                        <PreviewPanel title="Generated Output" src={controlNetResult.response.image_url} alt="ControlNet generated output" />
+                      </div>
                   </div>
                 ) : (
                   <EmptyPreview message="Generate to see the lineart preview and final output here." />
@@ -2062,7 +2616,6 @@ export default function App() {
                   <div className="overflow-hidden rounded-[24px] border border-white/10 bg-[rgba(255,255,255,0.03)]">
                     <img src={normalResult.response.image.image_url} alt={normalResult.response.image.positive_prompt} className="aspect-square w-full object-cover" />
                   </div>
-                  <ActionButton label="Edit this image" onClick={() => openInpaintEditor(normalResult.editable)} />
                 </div>
               ) : (
                 <EmptyPreview message="Generate an image to preview the latest output here." />
@@ -2101,11 +2654,11 @@ export default function App() {
                   label="Execution Mode"
                   value="CPU Only"
                   detail={
-                    isUploadInpaintMode
-                      ? "Upload mode reuses inpaint generation"
+                    isInpaintMode
+                      ? "Inpaint mode reuses local SD1.5 inpainting"
                       : isIPAdapterMode
-                        ? "IP-Adapter mode reuses local SD1.5 generation"
-                        : "Canvas mode reuses ControlNet generation"
+                      ? "IP-Adapter mode reuses local SD1.5 generation"
+                      : "Canvas mode reuses ControlNet generation"
                   }
                   tone="slate"
                 />
@@ -2114,212 +2667,56 @@ export default function App() {
           </div>
         </section>
 
-        {inpaintSource ? (
-          <section
-            ref={inpaintPanelRef}
-            className="rounded-[28px] border border-white/10 bg-[rgba(7,14,22,0.84)] p-5 shadow-panel backdrop-blur sm:p-6"
-          >
-            <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <h2 className="font-display text-2xl font-semibold text-white">Inpainting Edit</h2>
-                <p className="mt-1 text-sm text-slate-400">
-                  Edit the latest generated image by painting a mask over the areas that should be regenerated.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setInpaintSource(null)}
-                className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
-              >
-                Close Editor
-              </button>
-            </div>
-
-            <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-              <form onSubmit={handleInpaintSubmit} className="space-y-5">
-                <FieldShell label="Current Image" helper="Source image selected from the generated output">
-                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
-                    {inpaintSource.name}
-                  </div>
-                </FieldShell>
-
-                <FieldShell label="Positive Prompt" helper="Describe the edit you want in the masked area.">
-                  <textarea
-                    value={inpaintForm.positivePrompt}
-                    onChange={(event) => updateInpaintField("positivePrompt", event.target.value)}
-                    rows={4}
-                    required
-                    className="w-full resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-orange-400/50 focus:bg-white/[0.07]"
-                  />
-                </FieldShell>
-
-                <FieldShell label="Negative Prompt" helper="Optional constraints for the edited result.">
-                  <textarea
-                    value={inpaintForm.negativePrompt}
-                    onChange={(event) => updateInpaintField("negativePrompt", event.target.value)}
-                    rows={3}
-                    className="w-full resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-orange-400/50 focus:bg-white/[0.07]"
-                  />
-                </FieldShell>
-
-                <div className={`space-y-5 transition-opacity ${loraControlOpacity}`}>
-                  <FieldShell label="Art Style" helper="Uses the same LoRA style catalog as the main generator.">
-                    <select
-                      value={inpaintForm.loraStyle}
-                      onChange={(event) => handleInpaintStyleChange(event.target.value)}
-                      className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition focus:border-orange-400/50 focus:bg-white/[0.07]"
-                    >
-                      {loraStyles.map((style) => (
-                        <option key={style.key} value={style.key} className="bg-slate-900 text-white">
-                          {style.label}
-                        </option>
-                      ))}
-                    </select>
-                  </FieldShell>
-
-                  <FieldShell label="Style Strength" helper={`${inpaintForm.loraStrength.toFixed(2)} between 0.1 and 2.0`}>
-                    <input
-                      type="range"
-                      min={0.1}
-                      max={2.0}
-                      step={0.05}
-                      value={inpaintForm.loraStrength}
-                      onChange={(event) => updateInpaintField("loraStrength", Number(event.target.value))}
-                      className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
-                    />
-                  </FieldShell>
-                </div>
-
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <NumberField label="Width" helper="Prefilled from the source image" min={64} max={1024} step={8} value={inpaintForm.width} onChange={(value) => updateInpaintField("width", value)} />
-                  <NumberField label="Height" helper="Prefilled from the source image" min={64} max={1024} step={8} value={inpaintForm.height} onChange={(value) => updateInpaintField("height", value)} />
-                  <NumberField label="Steps" helper="Default 20" min={1} max={100} step={1} value={inpaintForm.steps} onChange={(value) => updateInpaintField("steps", value)} />
-                  <NumberField label="CFG Scale" helper="Default 7.5" min={1} max={30} step={0.5} value={inpaintForm.cfgScale} onChange={(value) => updateInpaintField("cfgScale", value)} />
-                  <NumberField label="Denoise Strength" helper="0.0 keeps more source structure, 1.0 changes more" min={0} max={1} step={0.05} value={inpaintForm.denoiseStrength} onChange={(value) => updateInpaintField("denoiseStrength", value)} />
-                </div>
-
-                <FieldShell label="Seed" helper="Defaults to -1 for random.">
-                  <input
-                    value={inpaintForm.seed}
-                    onChange={(event) => updateInpaintField("seed", event.target.value)}
-                    inputMode="numeric"
-                    className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-orange-400/50 focus:bg-white/[0.07]"
-                  />
-                </FieldShell>
-
-                <FieldShell label="Brush Size" helper={`${inpaintForm.brushSize}px between 5 and 80`}>
-                  <input
-                    type="range"
-                    min={5}
-                    max={80}
-                    step={1}
-                    value={inpaintForm.brushSize}
-                    onChange={(event) => updateInpaintField("brushSize", Number(event.target.value))}
-                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-orange-500"
-                  />
-                </FieldShell>
-
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={() => updateInpaintField("eraseMode", !inpaintForm.eraseMode)}
-                    className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
-                      inpaintForm.eraseMode
-                        ? "bg-white text-slate-950"
-                        : "border border-white/10 bg-white/5 text-slate-200 hover:border-orange-400/30 hover:bg-white/10"
-                    }`}
-                  >
-                    {inpaintForm.eraseMode ? "Erase Mode" : "Draw Mode"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearMask}
-                    className="rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:border-red-400/30 hover:bg-white/5"
-                  >
-                    Clear Mask
-                  </button>
-                </div>
-
-                {inpaintError ? (
-                  <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                    {inpaintError}
-                  </div>
-                ) : null}
-
-                <button
-                  type="submit"
-                  disabled={inpaintLoading}
-                  className="inline-flex items-center justify-center rounded-full bg-orange-500 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-orange-400 disabled:cursor-not-allowed disabled:bg-orange-700"
-                >
-                  {inpaintLoading ? "Generating..." : "Generate"}
-                </button>
-              </form>
-
-              <div className="space-y-5">
-                <div className="overflow-auto rounded-[24px] border border-white/10 bg-[linear-gradient(135deg,rgba(15,23,42,0.92),rgba(30,41,59,0.9))] p-3">
-                  <div
-                    className="relative mx-auto overflow-hidden rounded-[20px] border border-white/10 shadow-inner"
-                    style={{ width: `${inpaintForm.width}px`, height: `${inpaintForm.height}px` }}
-                  >
-                    <img
-                      src={inpaintSource.src}
-                      alt={inpaintSource.name}
-                      className="absolute inset-0 h-full w-full object-fill"
-                    />
-                    <canvas
-                      ref={overlayCanvasRef}
-                      width={inpaintForm.width}
-                      height={inpaintForm.height}
-                      onPointerDown={beginMaskStroke}
-                      onPointerMove={continueMaskStroke}
-                      onPointerUp={endMaskStroke}
-                      onPointerLeave={endMaskStroke}
-                      className="absolute inset-0 h-full w-full touch-none cursor-crosshair"
-                    />
-                    <canvas ref={maskCanvasRef} width={inpaintForm.width} height={inpaintForm.height} className="hidden" />
-                  </div>
-                </div>
-
-                {inpaintResult ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-display text-xl font-semibold text-white">Inpaint Result</h3>
-                      <button
-                        type="button"
-                        onClick={() => setShowSideBySide((current) => !current)}
-                        className="rounded-full border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-orange-400/30 hover:bg-white/5 hover:text-white"
-                      >
-                        {showSideBySide ? "Show Result Only" : "Show Side by Side"}
-                      </button>
-                    </div>
-
-                    {showSideBySide ? (
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <PreviewPanel title="Original" src={inpaintResult.original.src} alt="Original image selected for inpainting" />
-                        <PreviewPanel title="Inpainted Result" src={inpaintResult.response.image_url} alt="Inpainted result" />
-                      </div>
-                    ) : (
-                      <PreviewPanel title="Inpainted Result" src={inpaintResult.response.image_url} alt="Inpainted result" />
-                    )}
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <InfoChip label="Seed" value={String(inpaintResult.response.seed_used)} />
-                      <InfoChip label="Generation Time" value={`${inpaintResult.response.generation_time_seconds}s`} />
-                      <InfoChip label="CPU Usage" value={`${inpaintResult.response.cpu_usage}%`} />
-                      <InfoChip
-                        label="RAM Usage"
-                        value={`${Number(((inpaintResult.response.ram_used / inpaintResult.response.ram_total) * 100).toFixed(1))}%`}
-                      />
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </section>
-        ) : null}
       </div>
     </main>
   );
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function blurFloatMask(source: Float32Array, width: number, height: number, radius: number) {
+  const safeRadius = Math.max(0, Math.round(radius));
+  if (safeRadius === 0) {
+    return new Float32Array(source);
+  }
+
+  const horizontal = new Float32Array(source.length);
+  const output = new Float32Array(source.length);
+  const windowSize = safeRadius * 2 + 1;
+
+  for (let y = 0; y < height; y += 1) {
+    let sum = 0;
+    for (let x = -safeRadius; x <= safeRadius; x += 1) {
+      const sampleX = clamp(x, 0, width - 1);
+      sum += source[y * width + sampleX];
+    }
+
+    for (let x = 0; x < width; x += 1) {
+      horizontal[y * width + x] = sum / windowSize;
+      const removeX = clamp(x - safeRadius, 0, width - 1);
+      const addX = clamp(x + safeRadius + 1, 0, width - 1);
+      sum += source[y * width + addX] - source[y * width + removeX];
+    }
+  }
+
+  for (let x = 0; x < width; x += 1) {
+    let sum = 0;
+    for (let y = -safeRadius; y <= safeRadius; y += 1) {
+      const sampleY = clamp(y, 0, height - 1);
+      sum += horizontal[sampleY * width + x];
+    }
+
+    for (let y = 0; y < height; y += 1) {
+      output[y * width + x] = sum / windowSize;
+      const removeY = clamp(y - safeRadius, 0, height - 1);
+      const addY = clamp(y + safeRadius + 1, 0, height - 1);
+      sum += horizontal[addY * width + x] - horizontal[removeY * width + x];
+    }
+  }
+
+  return output;
 }
 
 function getCanvasPoint(
@@ -2333,22 +2730,6 @@ function getCanvasPoint(
     x: ((event.clientX - rect.left) / rect.width) * width,
     y: ((event.clientY - rect.top) / rect.height) * height,
   };
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function ActionButton({ label, onClick }: { label: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="inline-flex items-center justify-center rounded-full bg-orange-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-orange-400"
-    >
-      {label}
-    </button>
-  );
 }
 
 function ModeButton({

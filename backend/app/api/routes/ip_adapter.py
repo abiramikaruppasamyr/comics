@@ -5,11 +5,18 @@ from tempfile import NamedTemporaryFile
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.services.ip_adapter_pipeline import IPAdapterService
-
 
 router = APIRouter()
-ip_adapter_service = IPAdapterService()
+ip_adapter_service = None
+
+
+def get_ip_adapter_service():
+    global ip_adapter_service
+    if ip_adapter_service is None:
+        from app.services.ip_adapter_pipeline import IPAdapterService
+
+        ip_adapter_service = IPAdapterService()
+    return ip_adapter_service
 
 
 @router.post("/generate")
@@ -42,7 +49,7 @@ async def generate_ip_adapter_image(
                 temp_file.write(image_bytes)
                 temp_paths.append(Path(temp_file.name))
 
-        result = ip_adapter_service.generate(
+        result = get_ip_adapter_service().generate(
             positive_prompt=positive_prompt,
             negative_prompt=negative_prompt,
             reference_image_paths=[str(path) for path in temp_paths],

@@ -1,71 +1,98 @@
 from __future__ import annotations
 
-from pathlib import Path
-from tempfile import NamedTemporaryFile
+import base64
+import time
+from io import BytesIO
+from uuid import uuid4
 
+import psutil
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-from app.services.inpaint_pipeline import InpaintService
+from app.core.config import get_settings
 
 
 router = APIRouter()
-inpaint_service = InpaintService()
+inpaint_service = None
 
 
-@router.post("/generate")
+def get_inpaint_service():
+    global inpaint_service
+    if inpaint_service is None:
+        from app.services.inpaint_pipeline import InpaintService
+
+        inpaint_service = InpaintService()
+    return inpaint_service
+
+
+@router.post("")
 async def generate_inpaint_image(
-    init_image: UploadFile = File(...),
-    mask_image: UploadFile = File(...),
-    positive_prompt: str = Form(...),
+    image: UploadFile = File(...),
+    mask: UploadFile = File(...),
+    control_image: UploadFile | None = File(None),
+    prompt: str = Form(...),
     negative_prompt: str = Form(""),
     width: int = Form(512),
     height: int = Form(512),
-    steps: int = Form(20),
-    cfg_scale: float = Form(7.5),
-    denoise_strength: float = Form(1.0),
+    steps: int = Form(30),
+    guidance_scale: float = Form(7.5),
+    strength: float = Form(0.3),
     seed: int = Form(-1),
-    lora_style: str = Form(...),
-    lora_strength: float = Form(1.0),
 ) -> dict[str, float | int | str]:
-    init_temp_path: Path | None = None
-    mask_temp_path: Path | None = None
+    started_at = time.perf_counter()
     try:
-        init_image_bytes = await init_image.read()
-        mask_image_bytes = await mask_image.read()
-        if not init_image_bytes:
-            raise ValueError("Initial image upload is empty.")
-        if not mask_image_bytes:
-            raise ValueError("Mask image upload is empty.")
+        image_bytes = await image.read()
+        mask_bytes = await mask.read()
+        if not image_bytes:
+            raise ValueError("Uploaded image is empty.")
+        if not mask_bytes:
+            raise ValueError("Uploaded mask is empty.")
+        control_image_bytes = await control_image.read() if control_image is not None else None
 
-        with NamedTemporaryFile(delete=False, dir="/tmp", suffix=Path(init_image.filename or "init.png").suffix or ".png") as init_temp:
-            init_temp.write(init_image_bytes)
-            init_temp_path = Path(init_temp.name)
-
-        with NamedTemporaryFile(delete=False, dir="/tmp", suffix=Path(mask_image.filename or "mask.png").suffix or ".png") as mask_temp:
-            mask_temp.write(mask_image_bytes)
-            mask_temp_path = Path(mask_temp.name)
-
-        result = inpaint_service.inpaint(
-            positive_prompt=positive_prompt,
-            negative_prompt=negative_prompt,
-            init_image_path=str(init_temp_path),
-            mask_image_path=str(mask_temp_path),
-            width=width,
-            height=height,
-            steps=steps,
-            cfg_scale=cfg_scale,
-            denoise_strength=denoise_strength,
-            seed=seed,
-            lora_style=lora_style,
-            lora_strength=lora_strength,
+        base_image = _decode_image(image_bytes, mode="RGB")
+        mask_image = _decode_image(mask_bytes, mode="L")
+        control_reference_image = _decode_image(control_image_bytes, mode="RGB") if control_image_bytes else None
+        service = get_inpaint_service()
+        seed_used = service.resolve_seed(seed)
+        pipeline_steps = service.get_scheduler_step_count(
+            requested_steps=steps,
+            strength=strength,
         )
+        result_image = service.generate(
+            base_image=base_image,
+            mask_image=mask_image,
+            control_image=control_reference_image,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            target_width=width if width > 0 else None,
+            target_height=height if height > 0 else None,
+            num_inference_steps=steps,
+            guidance_scale=guidance_scale,
+            strength=strength,
+            seed=seed_used,
+        )
+
+        output_dir = get_settings().output_dir / "inpainting"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        image_filename = f"inpaint_{time.strftime('%Y%m%d_%H%M%S')}_{seed_used}_{uuid4().hex[:8]}.png"
+        output_path = output_dir / image_filename
+        result_image.save(output_path, format="PNG")
+
+        buffer = BytesIO()
+        result_image.save(buffer, format="PNG")
+        image_base64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+        memory = psutil.virtual_memory()
         return {
-            "image_url": f"/output/{result['image_filename']}",
-            "cpu_usage": result["cpu_usage"],
-            "ram_used": result["ram_used"],
-            "ram_total": result["ram_total"],
-            "seed_used": result["seed_used"],
-            "generation_time_seconds": result["generation_time_seconds"],
+            "image_base64": image_base64,
+            "cpu_usage": round(psutil.cpu_percent(interval=0.2), 1),
+            "ram_used": round(memory.used / (1024 * 1024), 1),
+            "ram_total": round(memory.total / (1024 * 1024), 1),
+            "seed_used": seed_used,
+            "steps_used": steps,
+            "pipeline_steps": pipeline_steps,
+            "generation_time_seconds": round(time.perf_counter() - started_at, 2),
+            "image_filename": image_filename,
+            "image_url": f"/output/inpainting/{image_filename}",
         }
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -73,8 +100,13 @@ async def generate_inpaint_image(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    finally:
-        if init_temp_path is not None and init_temp_path.exists():
-            init_temp_path.unlink(missing_ok=True)
-        if mask_temp_path is not None and mask_temp_path.exists():
-            mask_temp_path.unlink(missing_ok=True)
+
+
+def _decode_image(image_bytes: bytes, *, mode: str) -> Image.Image:
+    try:
+        image = Image.open(BytesIO(image_bytes))
+        image.load()
+    except UnidentifiedImageError as exc:
+        raise ValueError("Uploaded file is not a valid image.") from exc
+
+    return ImageOps.exif_transpose(image).convert(mode)

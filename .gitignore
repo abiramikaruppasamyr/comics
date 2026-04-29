@@ -14,6 +14,8 @@ htmlcov/
 input/
 .env
 .env.*
+!.env.example
+!backend/.env.example
 
 node_modules/
 dist/
@@ -26,6 +28,8 @@ pnpm-debug.log*
 
 output/*
 !output/.gitkeep
+
+models.zip
 
 models/**/*.ckpt
 models/**/*.pt
